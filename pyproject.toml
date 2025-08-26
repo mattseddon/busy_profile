@@ -1,0 +1,72 @@
+[project]
+name = "busy-profile"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Matt Seddon", email = "mattseddon@hotmail.com" }]
+requires-python = ">=3.11"
+dependencies = ["rich>=13.7"]
+
+[project.scripts]
+busy-profile = "busy_profile.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.17",
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[tool.uv.build-backend]
+module-name = "busy_profile"
+module-root = "src"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[tool.basedpyright]
+pythonVersion = "3.11"
+include = ["src", "tests"]
+# Ignoring a return value is idiomatic in the APIs used here (argparse's
+# add_argument, and the test helper that shells out to git), so requiring
+# `_ = ...` on every such call is noise rather than signal.
+reportUnusedCallResult = false
+# cli.Args is a typed argparse.Namespace, whose attributes argparse populates
+# from the parser defaults. This rule cannot see that, and the alternatives
+# (class-body defaults, or a Protocol needing a cast through object) are both
+# worse. See the warning in the Args docstring.
+reportUninitializedInstanceVariable = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
