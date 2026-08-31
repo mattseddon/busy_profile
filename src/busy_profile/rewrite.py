@@ -101,15 +101,12 @@ def rewrite_history(
             sentence = _write_random_text(repo, rng)
             if index == 0:
                 _git(repo, "add", "-A")
-            # --force so a target repo that gitignores the file still works.
             _git(repo, "add", "--force", "--", RANDOM_TEXT_FILE)
             _commit(repo, f"Update {RANDOM_TEXT_FILE} to be {sentence}", timestamp)
             if on_commit is not None:
                 on_commit(index + 1, total)
         _git(repo, "branch", "-M", branch)
     except (Exception, KeyboardInterrupt):
-        # Anything at all leaves the repo on a half-written orphan branch, so
-        # always put it back before propagating.
         _restore(repo, branch)
         raise
 
@@ -126,15 +123,11 @@ def _restore(repo: Path, branch: str) -> None:
     if _git(repo, "branch", "--list", branch):
         _git(repo, "checkout", "--force", branch)
     else:
-        # The original branch was unborn, so there is nothing to check out;
-        # just point HEAD back at it and clear what we staged.
         _git(repo, "symbolic-ref", "HEAD", f"refs/heads/{branch}")
         _git(repo, "read-tree", "--empty")
     if _git(repo, "branch", "--list", TEMP_BRANCH):
         _git(repo, "branch", "-D", TEMP_BRANCH)
 
-    # Do not leave our scratch file behind if the restored branch has no
-    # version of it to fall back on.
     path = repo / RANDOM_TEXT_FILE
     if path.exists() and not _git(repo, "ls-files", "--", RANDOM_TEXT_FILE):
         path.unlink()

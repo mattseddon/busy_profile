@@ -50,7 +50,6 @@ def test_different_seeds_give_different_histories() -> None:
 
 def test_commits_spread_across_many_days() -> None:
     timestamps = generate_timestamps(365, 2500, now=NOW, rng=random.Random(7))
-    # A uniform draw of 2500 over 365 days should touch nearly every day.
     assert len(commits_per_day(timestamps)) > 300
 
 

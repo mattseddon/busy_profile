@@ -40,7 +40,7 @@ def wide_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def repo(tmp_path: Path, isolated_git_config: None) -> Path:
     """A repository with one real commit and one untracked file."""
-    del isolated_git_config  # requested for its side effects only
+    del isolated_git_config
     path = tmp_path / "repo"
     path.mkdir()
     git(path, "init", "--initial-branch", "main")

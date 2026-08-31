@@ -39,8 +39,6 @@ from busy_profile.schedule import (
     generate_timestamps,
 )
 
-# Both resolve their stream lazily, so they follow any redirection of
-# sys.stdout/sys.stderr (which is what lets the tests capture them).
 console = Console()
 err_console = Console(stderr=True)
 
@@ -123,8 +121,6 @@ def parse_args(argv: Sequence[str] | None = None) -> Args:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
 
-    # One generator for both the dates and the sentences, so --seed reproduces
-    # the whole history.
     rng = random.Random(args.seed)
     try:
         timestamps = generate_timestamps(
@@ -186,8 +182,6 @@ def _rewrite_with_progress(
         TaskProgressColumn(),
         TimeRemainingColumn(elapsed_when_finished=True),
         console=console,
-        # Without a terminal there is nothing to animate, and the redraws would
-        # just be noise in a log.
         disable=not console.is_terminal,
     ) as progress:
         task = progress.add_task("committing", total=len(timestamps))
@@ -249,7 +243,6 @@ def _confirm(repo: Path) -> bool:
     try:
         return Confirm.ask("Continue?", default=False, console=console)
     except (EOFError, KeyboardInterrupt):
-        # Ctrl-D or Ctrl-C at the prompt is a refusal, not a crash.
         console.print()
         return False
 

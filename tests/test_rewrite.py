@@ -62,7 +62,6 @@ def test_initial_commit_is_dated_days_ago(repo: Path) -> None:
     author, committer = commit_dates(repo)[0]
     assert author == timestamps[0]
     assert committer == timestamps[0]
-    # git should also have kept the offset it was handed, not just the instant.
     assert author.utcoffset() == timestamps[0].utcoffset()
 
 
@@ -133,8 +132,6 @@ def test_each_commit_overwrites_rather_than_appends(repo: Path) -> None:
 
     rewrite_history(repo, timestamps, rng=random.Random(1))
 
-    # Overwriting means every version holds exactly one line, however many
-    # commits came before it.
     for sentence in random_text_at_each_commit(repo):
         assert len(sentence.splitlines()) == 1
 
@@ -210,7 +207,6 @@ def test_commit_messages_are_single_line_subjects(repo: Path) -> None:
 
     for revision in git(repo, "rev-list", "HEAD").splitlines():
         body = git(repo, "log", "-1", "--format=%B", revision).strip()
-        # One line means the whole sentence is the subject, with no body.
         assert len(body.splitlines()) == 1
         assert body == git(repo, "log", "-1", "--format=%s", revision)
 
@@ -275,7 +271,6 @@ def test_failed_rewrite_restores_the_original_branch(repo: Path) -> None:
     original = git(repo, "rev-parse", "HEAD")
     now = datetime.now().astimezone()
     timestamps = generate_timestamps(10, 5, now=now, rng=random.Random(0))
-    # With no configured identity and auto-detection off, `git commit` fails.
     git(repo, "config", "user.useConfigOnly", "true")
     git(repo, "config", "--unset", "user.email")
     git(repo, "config", "--unset", "user.name")

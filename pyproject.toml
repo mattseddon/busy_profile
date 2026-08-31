@@ -53,14 +53,7 @@ files = ["src", "tests"]
 [tool.basedpyright]
 pythonVersion = "3.11"
 include = ["src", "tests"]
-# Ignoring a return value is idiomatic in the APIs used here (argparse's
-# add_argument, and the test helper that shells out to git), so requiring
-# `_ = ...` on every such call is noise rather than signal.
 reportUnusedCallResult = false
-# cli.Args is a typed argparse.Namespace, whose attributes argparse populates
-# from the parser defaults. This rule cannot see that, and the alternatives
-# (class-body defaults, or a Protocol needing a cast through object) are both
-# worse. See the warning in the Args docstring.
 reportUninitializedInstanceVariable = false
 
 [tool.pytest.ini_options]

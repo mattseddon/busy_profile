@@ -84,6 +84,5 @@ def random_sentence(rng: random.Random) -> str:
         verb=rng.choice(VERBS),
         place=rng.choice(PLACES),
     )
-    # The templates hardcode "a", which reads wrong before a vowel.
     sentence = _A_BEFORE_VOWEL.sub("an ", sentence)
     return sentence[0].upper() + sentence[1:]

@@ -34,8 +34,6 @@ def test_flags_override_defaults() -> None:
 
 def test_every_attribute_args_declares_is_actually_populated() -> None:
     args = parse_args([])
-    # Args only annotates its attributes, so nothing populates them but the
-    # parser defaults. If one went missing, main() would raise AttributeError.
     for name in get_type_hints(Args):
         assert hasattr(args, name), name
 
@@ -101,8 +99,6 @@ def test_dry_run_renders_no_ansi_codes_when_piped(
         == 0
     )
 
-    # rich should detect the non-terminal and drop styling, so downstream tools
-    # (and these assertions) see plain text.
     assert "\x1b[" not in capsys.readouterr().out
 
 
@@ -234,7 +230,6 @@ def test_prompt_warns_what_will_be_lost(
         == 1
     )
 
-    # Flatten the panel border and wrapping before matching on the prose.
     out = " ".join(capsys.readouterr().out.replace("│", " ").split())
     assert "destructive rewrite" in out
     assert "Branch main has 1 commit." in out
@@ -260,7 +255,6 @@ def test_interrupting_the_prompt_aborts_cleanly(
     monkeypatch.setattr("builtins.input", interrupt)
     original = git(repo, "rev-parse", "HEAD")
 
-    # Ctrl-D or Ctrl-C at the prompt must not surface as a traceback.
     assert (
         main(["--days", "30", "--commits", "6", "--repo", str(repo), "--seed", "0"])
         == 1
@@ -291,8 +285,6 @@ def test_reports_an_error_for_a_non_repo(
 def test_rejects_non_positive_arguments(
     argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Some of these argparse rejects itself (raising SystemExit), others reach
-    # our own validation (returning the same code); both count as usage errors.
     try:
         code: int | str | None = main(argv)
     except SystemExit as error:

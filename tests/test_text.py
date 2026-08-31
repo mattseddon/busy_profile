@@ -44,8 +44,6 @@ def test_same_seed_gives_the_same_sentence() -> None:
 def test_generates_varied_sentences() -> None:
     rng = random.Random(0)
     sentences = {random_sentence(rng) for _ in range(200)}
-    # Nowhere near collision-bound; this just catches a generator stuck on one
-    # template or word.
     assert len(sentences) > 150
 
 
