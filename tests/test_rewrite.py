@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -18,9 +18,23 @@ from busy_profile.text import RANDOM_TEXT_FILE
 from tests.conftest import git
 
 
-def commit_dates(repo: Path) -> list[str]:
+def commit_dates(repo: Path) -> list[tuple[datetime, datetime]]:
+    """The (author, committer) date of every commit, oldest first.
+
+    Parsed rather than compared as text: git renders a zero UTC offset as ``Z``
+    where Python's ``isoformat`` writes ``+00:00``, so comparing the strings
+    would pass in a machine's local timezone and fail on a UTC CI runner.
+    Comparing datetimes compares instants, which holds in any timezone.
+    """
     log = git(repo, "log", "--reverse", "--format=%aI|%cI")
-    return log.splitlines()
+    return [
+        (datetime.fromisoformat(author), datetime.fromisoformat(committer))
+        for author, committer in (line.split("|") for line in log.splitlines())
+    ]
+
+
+def author_dates(repo: Path) -> list[datetime]:
+    return [author for author, _ in commit_dates(repo)]
 
 
 def random_text_at_each_commit(repo: Path) -> list[str]:
@@ -45,10 +59,11 @@ def test_initial_commit_is_dated_days_ago(repo: Path) -> None:
 
     rewrite_history(repo, timestamps)
 
-    author, committer = commit_dates(repo)[0].split("|")
-    expected = timestamps[0].isoformat()
-    assert author == expected
-    assert committer == expected
+    author, committer = commit_dates(repo)[0]
+    assert author == timestamps[0]
+    assert committer == timestamps[0]
+    # git should also have kept the offset it was handed, not just the instant.
+    assert author.utcoffset() == timestamps[0].utcoffset()
 
 
 def test_every_commit_keeps_its_timestamp(repo: Path) -> None:
@@ -57,8 +72,34 @@ def test_every_commit_keeps_its_timestamp(repo: Path) -> None:
 
     rewrite_history(repo, timestamps)
 
-    written = [line.split("|")[0] for line in commit_dates(repo)]
-    assert written == [timestamp.isoformat() for timestamp in timestamps]
+    assert author_dates(repo) == list(timestamps)
+
+
+def test_timestamps_survive_a_zero_utc_offset(repo: Path) -> None:
+    """Pin the case that only shows up on a UTC machine.
+
+    At a zero offset git writes ``Z`` and Python writes ``+00:00``. Forcing UTC
+    here rather than relying on the runner's timezone means this is exercised
+    everywhere, not just in CI.
+    """
+    now = datetime.now(UTC)
+    timestamps = generate_timestamps(30, 6, now=now, rng=random.Random(0))
+
+    rewrite_history(repo, timestamps)
+
+    assert author_dates(repo) == list(timestamps)
+    assert author_dates(repo)[0].utcoffset() == timedelta(0)
+
+
+def test_timestamps_survive_a_non_utc_offset(repo: Path) -> None:
+    """The mirror of the above, for a machine that is not on UTC."""
+    now = datetime.now(timezone(timedelta(hours=10)))
+    timestamps = generate_timestamps(30, 6, now=now, rng=random.Random(0))
+
+    rewrite_history(repo, timestamps)
+
+    assert author_dates(repo) == list(timestamps)
+    assert author_dates(repo)[0].utcoffset() == timedelta(hours=10)
 
 
 def test_initial_commit_snapshots_the_working_tree(repo: Path) -> None:
