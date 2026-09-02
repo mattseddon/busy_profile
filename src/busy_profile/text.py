@@ -37,6 +37,7 @@ NOUNS = (
     "metronome",
     "harbour",
     "lantern",
+    "meth",
 )
 
 VERBS = (
