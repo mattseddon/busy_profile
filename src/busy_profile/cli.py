@@ -223,14 +223,12 @@ def _confirm(repo: Path) -> bool:
     branch = current_branch(repo)
     plural = "" if existing == 1 else "s"
     fate = "it" if existing == 1 else "them"
-    aside = (
-        "[dim italic]*unless you have an up-to-date copy on your remote "
-        + "and then... \nskill issue.[/]"
-    )
     warning = (
         f"Branch [cyan]{escape(branch)}[/] has [bold]{existing:,}[/] commit{plural}."
         + f" Continuing makes {fate} unreachable.\n"
-        + f"This cannot be undone!*\n{aside}"
+        + "This cannot be undone!*\n"
+        + "[dim italic]*unless you have an up-to-date copy on your remote "
+        + "and then... \nskill issue.[/]"
     )
     console.print(
         Panel(
