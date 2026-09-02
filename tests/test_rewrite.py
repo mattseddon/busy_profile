@@ -7,34 +7,45 @@ from pathlib import Path
 import pytest
 
 from busy_profile import rewrite
-from busy_profile.git import GitError
+from busy_profile.git import GitError, run_raw
 from busy_profile.plan import PlannedCommit, plan_commits
 from busy_profile.rewrite import (
+    RANDOM_TEXT_FILE,
     TEMP_BRANCH,
+    StageCallback,
     assert_rewritable,
     current_branch,
+    format_raw_date,
     rewrite_history,
 )
-from busy_profile.text import RANDOM_TEXT_FILE
 from tests.conftest import git
+
+NOW = datetime(2026, 8, 31, 12, 0, 0, tzinfo=UTC)
 
 
 def plan_for(
-    repo: Path,
     days: int,
     count: int,
     *,
     seed: int = 0,
     now: datetime | None = None,
 ) -> list[PlannedCommit]:
-    """Stage ``repo`` and plan a history for it, as the CLI does."""
     return plan_commits(
-        repo,
         days,
         count,
         now=now or datetime.now().astimezone(),
         rng=random.Random(seed),
     )
+
+
+def rewrite_repo(
+    repo: Path,
+    planned: list[PlannedCommit],
+    *,
+    on_stage: StageCallback | None = None,
+) -> None:
+    """Check the repo then rewrite it, as the CLI does."""
+    rewrite_history(repo, assert_rewritable(repo), planned, on_stage=on_stage)
 
 
 def commit_dates(repo: Path) -> list[tuple[datetime, datetime]]:
@@ -63,18 +74,16 @@ def random_text_at_each_commit(repo: Path) -> list[str]:
 
 
 def test_rewrite_produces_the_requested_commits(repo: Path) -> None:
-    planned = plan_for(repo, 30, 25, seed=0)
-
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(30, 25))
 
     assert git(repo, "rev-list", "--count", "HEAD") == "25"
     assert current_branch(repo) == "main"
 
 
 def test_initial_commit_is_dated_days_ago(repo: Path) -> None:
-    planned = plan_for(repo, 30, 10, seed=0)
+    planned = plan_for(30, 10)
 
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, planned)
 
     author, committer = commit_dates(repo)[0]
     assert author == planned[0].timestamp
@@ -83,9 +92,9 @@ def test_initial_commit_is_dated_days_ago(repo: Path) -> None:
 
 
 def test_every_commit_keeps_its_timestamp(repo: Path) -> None:
-    planned = plan_for(repo, 60, 20, seed=3)
+    planned = plan_for(60, 20, seed=3)
 
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, planned)
 
     assert author_dates(repo) == [commit.timestamp for commit in planned]
 
@@ -97,9 +106,9 @@ def test_timestamps_survive_a_zero_utc_offset(repo: Path) -> None:
     here rather than relying on the runner's timezone means this is exercised
     everywhere, not just in CI.
     """
-    planned = plan_for(repo, 30, 6, seed=0, now=datetime.now(UTC))
+    planned = plan_for(30, 6, now=datetime.now(UTC))
 
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, planned)
 
     assert author_dates(repo) == [commit.timestamp for commit in planned]
     assert author_dates(repo)[0].utcoffset() == timedelta(0)
@@ -107,20 +116,16 @@ def test_timestamps_survive_a_zero_utc_offset(repo: Path) -> None:
 
 def test_timestamps_survive_a_non_utc_offset(repo: Path) -> None:
     """The mirror of the above, for a machine that is not on UTC."""
-    planned = plan_for(
-        repo, 30, 6, seed=0, now=datetime.now(timezone(timedelta(hours=10)))
-    )
+    planned = plan_for(30, 6, now=datetime.now(timezone(timedelta(hours=10))))
 
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, planned)
 
     assert author_dates(repo) == [commit.timestamp for commit in planned]
     assert author_dates(repo)[0].utcoffset() == timedelta(hours=10)
 
 
 def test_initial_commit_snapshots_the_working_tree(repo: Path) -> None:
-    planned = plan_for(repo, 10, 5, seed=0)
-
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(10, 5))
 
     root = git(repo, "rev-list", "--max-parents=0", "HEAD")
     tracked = git(repo, "ls-tree", "--name-only", "-r", root).splitlines()
@@ -128,10 +133,18 @@ def test_initial_commit_snapshots_the_working_tree(repo: Path) -> None:
     assert (repo / "README.md").read_text() == "# original\n"
 
 
-def test_every_commit_contains_a_random_sentence(repo: Path) -> None:
-    planned = plan_for(repo, 30, 15, seed=0)
+def test_only_the_root_commit_adds_the_working_tree(repo: Path) -> None:
+    rewrite_repo(repo, plan_for(10, 5))
 
-    rewrite_history(repo, planned)
+    *later, _root = git(repo, "rev-list", "HEAD").splitlines()
+    assert len(later) == 4
+    for revision in later:
+        changed = git(repo, "show", "--name-only", "--format=", revision)
+        assert changed == RANDOM_TEXT_FILE
+
+
+def test_every_commit_contains_a_random_sentence(repo: Path) -> None:
+    rewrite_repo(repo, plan_for(30, 15))
 
     contents = random_text_at_each_commit(repo)
     assert len(contents) == 15
@@ -141,27 +154,20 @@ def test_every_commit_contains_a_random_sentence(repo: Path) -> None:
 
 
 def test_each_commit_overwrites_rather_than_appends(repo: Path) -> None:
-    planned = plan_for(repo, 30, 20, seed=0)
-
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(30, 20))
 
     for sentence in random_text_at_each_commit(repo):
         assert len(sentence.splitlines()) == 1
 
 
 def test_sentences_change_between_commits(repo: Path) -> None:
-    planned = plan_for(repo, 30, 40, seed=0)
+    rewrite_repo(repo, plan_for(30, 40))
 
-    rewrite_history(repo, planned)
-
-    contents = random_text_at_each_commit(repo)
-    assert len(set(contents)) > 30
+    assert len(set(random_text_at_each_commit(repo))) > 30
 
 
 def test_working_tree_matches_the_final_commit(repo: Path) -> None:
-    planned = plan_for(repo, 30, 10, seed=0)
-
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(30, 10))
 
     assert (repo / RANDOM_TEXT_FILE).read_text() == git(
         repo, "show", f"HEAD:{RANDOM_TEXT_FILE}"
@@ -169,35 +175,33 @@ def test_working_tree_matches_the_final_commit(repo: Path) -> None:
     assert git(repo, "status", "--porcelain") == ""
 
 
-def test_same_rng_seed_reproduces_the_same_sentences(
-    repo: Path, tmp_path: Path
-) -> None:
-    """Each repo needs its own plan: entries name blobs in that repo's index."""
-    rewrite_history(repo, plan_for(repo, 30, 10, seed=7))
-    first = random_text_at_each_commit(repo)
+def test_one_plan_can_be_written_to_two_repos(repo: Path, tmp_path: Path) -> None:
+    """A plan names no blobs, so it is not tied to the repo it was made for."""
+    planned = plan_for(30, 10, seed=7)
+    rewrite_repo(repo, planned)
 
     other = tmp_path / "other"
     git(tmp_path, "init", "--initial-branch", "main", str(other))
     git(other, "config", "user.name", "Test User")
     git(other, "config", "user.email", "test@example.com")
-    rewrite_history(other, plan_for(other, 30, 10, seed=7))
+    rewrite_repo(other, planned)
 
-    assert random_text_at_each_commit(other) == first
+    assert random_text_at_each_commit(other) == random_text_at_each_commit(repo)
+    assert author_dates(other) == author_dates(repo)
 
 
 def test_random_text_is_committed_even_when_gitignored(repo: Path) -> None:
     (repo / ".gitignore").write_text(f"{RANDOM_TEXT_FILE}\n")
-    planned = plan_for(repo, 30, 5, seed=0)
 
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(30, 5))
 
     assert len(random_text_at_each_commit(repo)) == 5
 
 
 def test_commit_message_is_exactly_what_the_commit_wrote(repo: Path) -> None:
-    planned = plan_for(repo, 30, 25, seed=0)
+    planned = plan_for(30, 25)
 
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, planned)
 
     revisions = git(repo, "rev-list", "--reverse", "HEAD").splitlines()
     for revision, commit in zip(revisions, planned, strict=True):
@@ -207,9 +211,7 @@ def test_commit_message_is_exactly_what_the_commit_wrote(repo: Path) -> None:
 
 
 def test_commit_messages_are_single_line_subjects(repo: Path) -> None:
-    planned = plan_for(repo, 30, 20, seed=0)
-
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(30, 20))
 
     for revision in git(repo, "rev-list", "HEAD").splitlines():
         body = git(repo, "log", "-1", "--format=%B", revision).strip()
@@ -219,22 +221,21 @@ def test_commit_messages_are_single_line_subjects(repo: Path) -> None:
 
 def test_old_history_is_discarded(repo: Path) -> None:
     original = git(repo, "rev-parse", "HEAD")
-    planned = plan_for(repo, 10, 5, seed=0)
 
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(10, 5))
 
     assert original not in git(repo, "rev-list", "HEAD")
     assert git(repo, "branch", "--list", TEMP_BRANCH) == ""
 
 
 def test_stage_callback_reports_each_stage_in_order(repo: Path) -> None:
-    planned = plan_for(repo, 10, 5, seed=0)
     seen: list[str] = []
 
-    rewrite_history(repo, planned, on_stage=seen.append)
+    rewrite_repo(repo, plan_for(10, 5), on_stage=seen.append)
 
     assert seen == [
         "reading git identity",
+        "staging the working tree",
         "building 5 commits",
         "importing 5 commits",
         "pointing main at the new history",
@@ -243,9 +244,7 @@ def test_stage_callback_reports_each_stage_in_order(repo: Path) -> None:
 
 def test_history_is_written_as_a_single_packfile(repo: Path) -> None:
     """fast-import packs everything, rather than leaving loose objects behind."""
-    planned = plan_for(repo, 30, 50, seed=0)
-
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(30, 50))
 
     counts = dict(
         line.split(": ", 1) for line in git(repo, "count-objects", "-v").splitlines()
@@ -255,9 +254,7 @@ def test_history_is_written_as_a_single_packfile(repo: Path) -> None:
 
 
 def test_history_is_linear_with_a_single_root(repo: Path) -> None:
-    planned = plan_for(repo, 30, 20, seed=0)
-
-    rewrite_history(repo, planned)
+    rewrite_repo(repo, plan_for(30, 20))
 
     assert len(git(repo, "rev-list", "--max-parents=0", "HEAD").splitlines()) == 1
     assert len(git(repo, "rev-list", "--merges", "HEAD").splitlines()) == 0
@@ -269,14 +266,14 @@ def test_rewrite_works_on_a_repo_with_no_commits(tmp_path: Path) -> None:
     git(tmp_path, "config", "user.name", "Test User")
     git(tmp_path, "config", "user.email", "test@example.com")
 
-    rewrite_history(tmp_path, plan_for(tmp_path, 10, 3))
+    rewrite_repo(tmp_path, plan_for(10, 3))
 
     assert git(tmp_path, "rev-list", "--count", "HEAD") == "3"
 
 
-def test_rejects_an_empty_list_of_commits(repo: Path) -> None:
-    with pytest.raises(ValueError, match="must not be empty"):
-        rewrite_history(repo, [])
+def test_assert_rewritable_returns_the_checked_out_branch(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature/wip")
+    assert assert_rewritable(repo) == "feature/wip"
 
 
 def test_rejects_detached_head(repo: Path) -> None:
@@ -296,18 +293,24 @@ def test_rejects_a_directory_that_is_not_a_repo(tmp_path: Path) -> None:
         assert_rewritable(tmp_path)
 
 
+def test_rejects_a_bare_repo(tmp_path: Path) -> None:
+    git(tmp_path, "init", "--bare")
+    with pytest.raises(GitError, match="bare"):
+        assert_rewritable(tmp_path)
+
+
 def test_missing_git_identity_fails_before_anything_is_touched(repo: Path) -> None:
     original = git(repo, "rev-parse", "HEAD")
-    planned = plan_for(repo, 10, 5, seed=0)
     git(repo, "config", "user.useConfigOnly", "true")
     git(repo, "config", "--unset", "user.email")
     git(repo, "config", "--unset", "user.name")
 
     with pytest.raises(GitError):
-        rewrite_history(repo, planned)
+        rewrite_repo(repo, plan_for(10, 5))
 
     assert current_branch(repo) == "main"
     assert git(repo, "rev-parse", "HEAD") == original
+    assert git(repo, "status", "--porcelain") == "?? untracked.txt"
     assert git(repo, "branch", "--list", TEMP_BRANCH) == ""
     assert not (repo / RANDOM_TEXT_FILE).exists()
 
@@ -322,7 +325,6 @@ def test_a_failed_import_leaves_head_and_the_working_tree_alone(
     to a temporary ref means a failure here cannot touch HEAD or the tree.
     """
     original = git(repo, "rev-parse", "HEAD")
-    planned = plan_for(repo, 10, 5, seed=0)
 
     def broken_stream(*_: object, **_kwargs: object) -> bytes:
         del _kwargs
@@ -331,7 +333,7 @@ def test_a_failed_import_leaves_head_and_the_working_tree_alone(
     monkeypatch.setattr(rewrite, "_import_stream", broken_stream)
 
     with pytest.raises(GitError, match="fast-import"):
-        rewrite_history(repo, planned)
+        rewrite_repo(repo, plan_for(10, 5))
 
     assert current_branch(repo) == "main"
     assert git(repo, "rev-parse", "HEAD") == original
@@ -339,13 +341,32 @@ def test_a_failed_import_leaves_head_and_the_working_tree_alone(
     assert git(repo, "branch", "--list", TEMP_BRANCH) == ""
 
 
-def test_naive_timestamps_are_rejected_before_anything_is_written(repo: Path) -> None:
+def test_an_interrupt_after_the_import_leaves_no_temp_branch(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C between the import finishing and the branch moving must not
+    leave the temporary branch behind, or the next run would refuse to start."""
     original = git(repo, "rev-parse", "HEAD")
-    naive = PlannedCommit(datetime.now() - timedelta(days=1), "A sentence.")
 
-    with pytest.raises(ValueError, match="timezone-aware"):
-        rewrite_history(repo, [naive])
+    def interrupt_after_import(repo: Path, *args: str, **kwargs: bytes | None) -> bytes:
+        output = run_raw(repo, *args, **kwargs)
+        if args[0] == "fast-import":
+            raise KeyboardInterrupt
+        return output
 
-    assert current_branch(repo) == "main"
+    monkeypatch.setattr(rewrite, "run_raw", interrupt_after_import)
+
+    with pytest.raises(KeyboardInterrupt):
+        rewrite_repo(repo, plan_for(10, 5))
+
     assert git(repo, "rev-parse", "HEAD") == original
-    assert not (repo / RANDOM_TEXT_FILE).exists()
+    assert git(repo, "branch", "--list", TEMP_BRANCH) == ""
+
+
+def test_format_raw_date_is_epoch_seconds_and_offset() -> None:
+    assert format_raw_date(NOW) == "1788177600 +0000"
+
+
+def test_format_raw_date_keeps_a_non_utc_offset() -> None:
+    ten_hours_east = timezone(timedelta(hours=10))
+    assert format_raw_date(NOW.astimezone(ten_hours_east)) == "1788177600 +1000"

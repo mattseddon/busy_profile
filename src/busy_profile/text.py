@@ -5,8 +5,6 @@ from __future__ import annotations
 import random
 import re
 
-RANDOM_TEXT_FILE = "random_text"
-
 _A_BEFORE_VOWEL = re.compile(r"\ba (?=[aeiou])")
 
 ADJECTIVES = (

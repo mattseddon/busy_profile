@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from importlib.metadata import version
 from pathlib import Path
 from typing import get_type_hints
 
 import pytest
 
-from busy_profile import __version__
 from busy_profile.cli import Args, main, parse_args
 from busy_profile.plan import DEFAULT_COMMITS, DEFAULT_DAYS
 from tests.conftest import git
@@ -17,7 +17,7 @@ def test_version_flag_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         main(["--version"])
     assert excinfo.value.code == 0
-    assert capsys.readouterr().out.strip() == __version__
+    assert capsys.readouterr().out.strip() == version("busy-profile")
 
 
 def test_defaults_are_365_days_and_2500_commits() -> None:
@@ -77,6 +77,17 @@ def test_dry_run_reports_the_plan_without_touching_the_repo(
     assert "commits" in out
     assert "40" in out
     assert git(repo, "rev-parse", "HEAD") == original
+    assert git(repo, "status", "--porcelain") == "?? untracked.txt"
+
+
+def test_dry_run_fails_the_same_way_a_real_run_would(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--repo", str(tmp_path), "--dry-run"]) == 1
+
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
+    assert "plan" not in captured.out
 
 
 def test_dry_run_renders_no_ansi_codes_when_piped(
@@ -163,6 +174,7 @@ def test_refuses_to_rewrite_without_a_terminal_or_yes(
 
     assert "pass --yes" in capsys.readouterr().err
     assert git(repo, "rev-parse", "HEAD") == original
+    assert git(repo, "status", "--porcelain") == "?? untracked.txt"
 
 
 class _Tty:
@@ -203,6 +215,7 @@ def test_answering_yes_at_the_prompt_rewrites(
 def test_answering_no_at_the_prompt_leaves_the_repo_alone(
     repo: Path, interactive_stdin: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Neither the history nor the index: nothing is staged until the user agrees."""
     del interactive_stdin
     monkeypatch.setattr("builtins.input", _answering("n"))
     original = git(repo, "rev-parse", "HEAD")
@@ -213,6 +226,7 @@ def test_answering_no_at_the_prompt_leaves_the_repo_alone(
     )
 
     assert git(repo, "rev-parse", "HEAD") == original
+    assert git(repo, "status", "--porcelain") == "?? untracked.txt"
 
 
 def test_prompt_warns_what_will_be_lost(

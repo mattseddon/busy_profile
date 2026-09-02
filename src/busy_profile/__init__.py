@@ -1,5 +1,1 @@
-"""busy_profile."""
-
-__version__ = "0.1.0"
-
-__all__ = ["__version__"]
+"""Rewrite a repository's history as randomly dated commits. Run ``busy-profile``."""

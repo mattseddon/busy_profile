@@ -3,11 +3,7 @@ from __future__ import annotations
 import random
 import re
 
-from busy_profile.text import RANDOM_TEXT_FILE, TEMPLATES, random_sentence
-
-
-def test_filename_is_random_text() -> None:
-    assert RANDOM_TEXT_FILE == "random_text"
+from busy_profile.text import TEMPLATES, random_sentence
 
 
 def test_sentence_is_capitalised_and_terminated() -> None:

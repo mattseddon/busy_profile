@@ -1,8 +1,4 @@
-"""Running git, and reporting its failures.
-
-Shared by :mod:`busy_profile.plan` and :mod:`busy_profile.rewrite` so that
-neither has to import the other.
-"""
+"""Running git, and reporting its failures."""
 
 from __future__ import annotations
 

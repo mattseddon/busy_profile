@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import random
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
 
 from rich.console import Console
@@ -15,21 +17,9 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 
-from busy_profile import __version__
 from busy_profile.git import GitError
-from busy_profile.plan import (
-    DEFAULT_COMMITS,
-    DEFAULT_DAYS,
-    PlannedCommit,
-    commits_per_day,
-    plan_commits,
-)
-from busy_profile.rewrite import (
-    assert_rewritable,
-    commit_count,
-    current_branch,
-    rewrite_history,
-)
+from busy_profile.plan import DEFAULT_COMMITS, DEFAULT_DAYS, PlannedCommit, plan_commits
+from busy_profile.rewrite import assert_rewritable, commit_count, rewrite_history
 
 console = Console()
 err_console = Console(stderr=True)
@@ -109,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the confirmation prompt",
     )
-    parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--version", action="version", version=version("busy-profile"))
     return parser
 
 
@@ -120,60 +110,63 @@ def parse_args(argv: Sequence[str] | None = None) -> Args:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-
     repo = args.repo
-    rng = random.Random(args.seed)
-    now = datetime.now().astimezone()
-
-    if args.dry_run:
-        _describe(plan_commits(None, args.days, args.commits, now=now, rng=rng), repo)
-        return 0
 
     try:
-        assert_rewritable(repo)
-        planned = plan_commits(repo, args.days, args.commits, now=now, rng=rng)
+        branch = assert_rewritable(repo)
     except GitError as error:
         _error(str(error))
         return 1
 
+    # A naive local ``now`` lets each commit carry the UTC offset of its own day.
+    planned = plan_commits(
+        args.days, args.commits, now=datetime.now(), rng=random.Random(args.seed)
+    )
     _describe(planned, repo)
 
-    if not args.yes and not _confirm(repo):
+    if args.dry_run:
+        return 0
+
+    if not args.yes and not _confirm(repo, branch):
         err_console.print("[yellow]aborted[/]", soft_wrap=True)
         return 1
 
     try:
-        _rewrite_with_spinner(repo, planned)
+        _rewrite_with_spinner(repo, branch, planned)
     except GitError as error:
         _error(str(error))
         return 1
     except KeyboardInterrupt:
         err_console.print(
-            "\n[yellow]interrupted[/]; the original history is untouched",
+            "\n[yellow]interrupted[/]; see `git status` and `git log` before retrying",
             soft_wrap=True,
         )
         return 130
 
     tick = "[green]\N{HEAVY CHECK MARK}[/]"
     console.print(
-        f"{tick} rewrote [bold]{len(planned):,}[/] commits"
-        + f" in [bold]{escape(str(repo))}[/]",
+        (
+            f"{tick} rewrote [bold]{len(planned):,}[/] commits"
+            f" in [bold]{escape(str(repo))}[/]"
+        ),
         soft_wrap=True,
     )
     return 0
 
 
-def _rewrite_with_spinner(repo: Path, commits: Sequence[PlannedCommit]) -> None:
+def _rewrite_with_spinner(
+    repo: Path, branch: str, commits: Sequence[PlannedCommit]
+) -> None:
     if not console.is_terminal:
-        rewrite_history(repo, commits)
+        rewrite_history(repo, branch, commits)
         return
 
     with console.status("[cyan]starting[/]", spinner="dots") as status:
 
         def report(stage: str) -> None:
-            status.update(f"[cyan]{stage}[/]")
+            status.update(f"[cyan]{escape(stage)}[/]")
 
-        rewrite_history(repo, commits, on_stage=report)
+        rewrite_history(repo, branch, commits, on_stage=report)
 
 
 def _error(message: str) -> None:
@@ -181,7 +174,7 @@ def _error(message: str) -> None:
 
 
 def _describe(commits: Sequence[PlannedCommit], repo: Path) -> None:
-    per_day = commits_per_day(commits)
+    per_day = Counter(commit.timestamp.date() for commit in commits)
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="cyan", justify="right")
     summary.add_column()
@@ -198,21 +191,20 @@ def _describe(commits: Sequence[PlannedCommit], repo: Path) -> None:
     )
 
 
-def _confirm(repo: Path) -> bool:
+def _confirm(repo: Path, branch: str) -> bool:
     if not sys.stdin.isatty():
         _error("refusing to rewrite history without a terminal; pass --yes")
         return False
 
     existing = commit_count(repo)
-    branch = current_branch(repo)
     plural = "" if existing == 1 else "s"
     fate = "it" if existing == 1 else "them"
     warning = (
-        f"Branch [cyan]{escape(branch)}[/] has [bold]{existing:,}[/] commit{plural}."
-        + f" Continuing makes {fate} unreachable.\n"
-        + "This cannot be undone!*\n"
-        + "[dim italic]*unless you have an up-to-date copy on your remote "
-        + "and then... \nskill issue.[/]"
+        f"Branch [cyan]{escape(branch)}[/] has [bold]{existing:,}[/] commit{plural}. "
+        f"Continuing makes {fate} unreachable.\n"
+        "This cannot be undone!*\n"
+        "[dim italic]*unless you have an up-to-date copy on your remote "
+        "and then... \nskill issue.[/]"
     )
     console.print(
         Panel(
