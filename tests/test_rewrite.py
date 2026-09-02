@@ -8,9 +8,9 @@ import pytest
 
 from busy_profile import rewrite
 from busy_profile.git import GitError, run_raw
-from busy_profile.plan import PlannedCommit, plan_commits
+from busy_profile.gource import plan_gource_commits
+from busy_profile.plan import RANDOM_TEXT_FILE, PlannedCommit, plan_commits
 from busy_profile.rewrite import (
-    RANDOM_TEXT_FILE,
     TEMP_BRANCH,
     StageCallback,
     assert_rewritable,
@@ -18,7 +18,7 @@ from busy_profile.rewrite import (
     format_raw_date,
     rewrite_history,
 )
-from tests.conftest import git
+from tests.conftest import git, replay
 
 NOW = datetime(2026, 8, 31, 12, 0, 0, tzinfo=UTC)
 
@@ -361,6 +361,35 @@ def test_an_interrupt_after_the_import_leaves_no_temp_branch(
 
     assert git(repo, "rev-parse", "HEAD") == original
     assert git(repo, "branch", "--list", TEMP_BRANCH) == ""
+
+
+def test_gource_plan_builds_the_planned_tree_around_the_snapshot(repo: Path) -> None:
+    """Moving a folder of folders exercises fast-import's directory rename."""
+    planned = plan_gource_commits(
+        30, 14, now=NOW, rng=random.Random(0), reserved={"README.md", "untracked.txt"}
+    )
+
+    rewrite_repo(repo, planned)
+
+    tracked = set(git(repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines())
+    expected = replay(planned)
+    assert tracked == set(expected) | {"README.md", "untracked.txt"}
+    assert RANDOM_TEXT_FILE not in tracked
+    assert (repo / "README.md").read_text() == "# original\n"
+    for path, content in expected.items():
+        assert (repo / path).read_text() == content
+    assert git(repo, "rev-list", "--count", "HEAD") == "14"
+    assert git(repo, "log", "-1", "--format=%s") == planned[-1].message
+
+
+def test_gource_moves_show_up_as_renames_in_the_log(repo: Path) -> None:
+    planned = plan_gource_commits(30, 5, now=NOW, rng=random.Random(0))
+
+    rewrite_repo(repo, planned)
+
+    statuses = git(repo, "show", "--name-status", "--format=", "HEAD").splitlines()
+    assert len(statuses) == 3
+    assert all(line.startswith("R100") for line in statuses)
 
 
 def test_format_raw_date_is_epoch_seconds_and_offset() -> None:

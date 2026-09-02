@@ -17,35 +17,53 @@ DEFAULT_COMMITS = 2500
 
 SECONDS_PER_DAY = 24 * 60 * 60
 
+RANDOM_TEXT_FILE = "random_text"
+
+
+@dataclass(frozen=True, slots=True)
+class WriteFile:
+    """Create or overwrite ``path`` so that it holds exactly ``content``."""
+
+    path: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class Move:
+    """Rename a file, or a whole folder, from ``source`` to ``destination``."""
+
+    source: str
+    destination: str
+
+
+Change = WriteFile | Move
+
 
 @dataclass(frozen=True, slots=True)
 class PlannedCommit:
-    """A single commit to write: when it is dated and what it says.
+    """A single commit to write: when it is dated, what it says, what it changes.
 
-    ``message`` is both the commit message and the entire contents of
-    ``random_text`` at that commit, so the two can never drift apart.
+    Paths in ``changes`` are relative to the repository root and use ``/``.
     """
 
     timestamp: datetime
     message: str
+    changes: tuple[Change, ...]
 
 
-def plan_commits(
+def plan_timestamps(
     days: int,
     commits: int,
     *,
     now: datetime,
     rng: random.Random,
-) -> list[PlannedCommit]:
-    """Plan ``commits`` commits in date order, spanning the last ``days`` days.
+) -> list[datetime]:
+    """Date ``commits`` commits in order, spanning the last ``days`` days.
 
     The first is dated exactly ``now - days``, so the initial commit lands on
     the requested date. The rest are drawn uniformly at random from the open
     interval ``(start, now]``. Every random offset is at least one second, so
     sorting the rest is enough to keep the first commit first.
-
-    Each commit also gets its message here, so ``rng`` is the only source of
-    randomness in a rewrite and one seed reproduces a history exactly.
 
     Pass a naive ``now`` to plan in local time: each commit then carries the UTC
     offset that was in force at its own instant, so a history that spans a
@@ -62,7 +80,26 @@ def plan_commits(
         return (start + timedelta(seconds=seconds)).astimezone(now.tzinfo)
 
     later = sorted(at(rng.randint(1, span)) for _ in range(commits - 1))
+    return [at(0), *later]
 
-    planned = [PlannedCommit(at(0), random_sentence(rng))]
-    planned.extend(PlannedCommit(stamp, random_sentence(rng)) for stamp in later)
+
+def plan_commits(
+    days: int,
+    commits: int,
+    *,
+    now: datetime,
+    rng: random.Random,
+) -> list[PlannedCommit]:
+    """Plan a history in which every commit writes a sentence to ``random_text``.
+
+    Each message is also the entire content of the file at that commit, so the
+    two can never drift apart. Dates come from :func:`plan_timestamps` and are
+    drawn before any sentence, so ``rng`` is the only source of randomness and
+    one seed reproduces a history exactly.
+    """
+    planned: list[PlannedCommit] = []
+    for stamp in plan_timestamps(days, commits, now=now, rng=rng):
+        sentence = random_sentence(rng)
+        changes = (WriteFile(RANDOM_TEXT_FILE, f"{sentence}\n"),)
+        planned.append(PlannedCommit(stamp, sentence, changes))
     return planned

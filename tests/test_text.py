@@ -3,7 +3,14 @@ from __future__ import annotations
 import random
 import re
 
-from busy_profile.text import TEMPLATES, random_sentence
+from busy_profile.text import (
+    FILE_EXTENSIONS,
+    NOUNS,
+    TEMPLATES,
+    file_names,
+    folder_names,
+    random_sentence,
+)
 
 
 def test_sentence_is_capitalised_and_terminated() -> None:
@@ -41,6 +48,24 @@ def test_generates_varied_sentences() -> None:
     rng = random.Random(0)
     sentences = {random_sentence(rng) for _ in range(200)}
     assert len(sentences) > 150
+
+
+def test_file_names_are_safe_paths_with_a_known_extension() -> None:
+    names = file_names(random.Random(0))
+    for name in (next(names) for _ in range(50)):
+        assert name.endswith(FILE_EXTENSIONS)
+        assert "/" not in name
+        assert " " not in name
+
+
+def test_folder_names_are_plain_nouns_until_those_run_out() -> None:
+    names = folder_names(random.Random(0))
+    plain = [next(names) for _ in range(len(NOUNS))]
+    assert all(name in NOUNS for name in plain)
+
+    qualified = next(names)
+    assert qualified not in NOUNS
+    assert qualified.rsplit("-", 1)[-1] in NOUNS
 
 
 def test_every_template_formats_with_the_available_words() -> None:

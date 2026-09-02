@@ -1,9 +1,12 @@
-"""Generation of the random sentences that each commit writes."""
+"""Generation of the random sentences, file names and folder names commits use."""
 
 from __future__ import annotations
 
 import random
 import re
+from collections.abc import Iterator
+
+FILE_EXTENSIONS = (".py", ".md", ".txt", ".json", ".yml", ".toml", ".html", ".css")
 
 _A_BEFORE_VOWEL = re.compile(r"\ba (?=[aeiou])")
 
@@ -153,3 +156,28 @@ def random_sentence(rng: random.Random) -> str:
     )
     sentence = _A_BEFORE_VOWEL.sub("an ", sentence)
     return sentence[0].upper() + sentence[1:]
+
+
+def file_names(rng: random.Random) -> Iterator[str]:
+    """Endless candidate file names of the form ``adjective-noun.ext``.
+
+    gource colours files by extension, so drawing from a handful of extensions
+    gives it a varied picture.
+    """
+    while True:
+        stem = f"{rng.choice(ADJECTIVES)}-{rng.choice(NOUNS)}"
+        yield stem + rng.choice(FILE_EXTENSIONS)
+
+
+def folder_names(rng: random.Random) -> Iterator[str]:
+    """Endless candidate folder names.
+
+    Plain nouns first, for as many draws as there are nouns. If a caller has
+    rejected all of those the nouns are evidently all taken, so from then on
+    the names are qualified with an adjective so that a free one can always be
+    found.
+    """
+    for _ in range(len(NOUNS)):
+        yield rng.choice(NOUNS)
+    while True:
+        yield f"{rng.choice(ADJECTIVES)}-{rng.choice(NOUNS)}"

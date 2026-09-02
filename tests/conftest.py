@@ -1,9 +1,38 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+
+from busy_profile.plan import PlannedCommit, WriteFile
+
+
+def replay(commits: Sequence[PlannedCommit]) -> dict[str, str]:
+    """Apply a plan to an empty ``{path: content}`` tree, checking every step.
+
+    A write must not clobber an existing path, a move must have something to
+    move, and nothing may already sit where a move lands.
+    """
+    tree: dict[str, str] = {}
+
+    def under(prefix: str) -> list[str]:
+        return [p for p in tree if p == prefix or p.startswith(prefix + "/")]
+
+    for commit in commits:
+        for change in commit.changes:
+            if isinstance(change, WriteFile):
+                assert change.path not in tree, change
+                tree[change.path] = change.content
+            else:
+                moved = under(change.source)
+                assert moved, change
+                assert not under(change.destination), change
+                for path in moved:
+                    new_path = change.destination + path[len(change.source) :]
+                    tree[new_path] = tree.pop(path)
+    return tree
 
 
 def git(repo: Path, *args: str) -> str:

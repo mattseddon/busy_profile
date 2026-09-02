@@ -9,9 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from busy_profile.git import GitError, run, run_raw
-from busy_profile.plan import PlannedCommit
-
-RANDOM_TEXT_FILE = "random_text"
+from busy_profile.plan import PlannedCommit, WriteFile
 
 TEMP_BRANCH = "busy-profile-rewrite"
 TEMP_REF = f"refs/heads/{TEMP_BRANCH}"
@@ -96,8 +94,8 @@ def rewrite_history(
     hands the answer on rather than having it checked again here.
 
     The working tree is staged and snapshotted into the first commit. Every
-    commit writes its message into ``random_text``, overwriting whatever the
-    previous commit put there. The previous history is discarded.
+    commit then applies its planned changes on top of its parent's tree. The
+    previous history is discarded.
 
     The commits are built by ``git fast-import``, which writes them all as one
     packfile in a single pass. Nothing touches HEAD or the working tree until
@@ -182,7 +180,7 @@ def _import_stream(
 
     Commits with no ``from`` chain onto the branch tip, so the first is a root
     commit and the rest are linear. Only the first carries ``snapshot``; every
-    later commit inherits its parent's tree and replaces a single blob.
+    later commit inherits its parent's tree and applies its own changes.
     """
     chunks = _commit_chunks(commits[0], snapshot, identity)
     for commit in commits[1:]:
@@ -197,7 +195,6 @@ def _commit_chunks(
     identity: Identity,
 ) -> list[bytes]:
     message = commit.message.encode()
-    blob = f"{commit.message}\n".encode()
     stamp = format_raw_date(commit.timestamp)
 
     chunks = [
@@ -210,6 +207,12 @@ def _commit_chunks(
         f"M {entry.mode} {entry.sha} ".encode() + entry.path + b"\n"
         for entry in entries
     )
-    chunks.append(f"M 100644 inline {RANDOM_TEXT_FILE}\n".encode())
-    chunks.append(f"data {len(blob)}\n".encode() + blob)
+    for change in commit.changes:
+        if isinstance(change, WriteFile):
+            blob = change.content.encode()
+            chunks.append(f"M 100644 inline {change.path}\n".encode())
+            chunks.append(f"data {len(blob)}\n".encode() + blob)
+        else:
+            # fast-import renames whole subdirectories as readily as files.
+            chunks.append(f"R {change.source} {change.destination}\n".encode())
     return chunks

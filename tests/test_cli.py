@@ -48,6 +48,7 @@ def test_args_attributes_have_their_declared_types() -> None:
     assert isinstance(args.repo, Path)
     assert isinstance(args.dry_run, bool)
     assert isinstance(args.yes, bool)
+    assert isinstance(args.for_gource, bool)
     assert args.seed is None
 
 
@@ -187,6 +188,43 @@ def test_rewrites_the_repo_when_confirmed(
 
     assert git(repo, "rev-list", "--count", "HEAD") == "12"
     assert "rewrote 12 commits" in capsys.readouterr().out
+
+
+def test_for_gource_grows_a_tree_instead_of_random_text(repo: Path) -> None:
+    assert (
+        main(
+            [
+                "--commits",
+                "14",
+                "--repo",
+                str(repo),
+                "--seed",
+                "0",
+                "--yes",
+                "--for-gource",
+            ]
+        )
+        == 0
+    )
+
+    tracked = git(repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
+    assert "random_text" not in tracked
+    assert "README.md" in tracked
+    assert "untracked.txt" in tracked
+    assert any(path.count("/") == 2 for path in tracked)
+    assert git(repo, "status", "--porcelain") == ""
+
+
+def test_for_gource_dry_run_describes_the_tree(
+    repo: Path, wide_terminal: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    del wide_terminal
+    assert (
+        main(["--commits", "14", "--repo", str(repo), "--dry-run", "--for-gource"]) == 0
+    )
+
+    assert "9 files, 4 folders" in capsys.readouterr().out
+    assert git(repo, "status", "--porcelain") == "?? untracked.txt"
 
 
 def test_refuses_to_rewrite_without_a_terminal_or_yes(

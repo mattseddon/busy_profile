@@ -18,7 +18,15 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from busy_profile.git import GitError
-from busy_profile.plan import DEFAULT_COMMITS, DEFAULT_DAYS, PlannedCommit, plan_commits
+from busy_profile.gource import plan_gource_commits
+from busy_profile.plan import (
+    DEFAULT_COMMITS,
+    DEFAULT_DAYS,
+    Move,
+    PlannedCommit,
+    WriteFile,
+    plan_commits,
+)
 from busy_profile.rewrite import assert_rewritable, commit_count, rewrite_history
 
 console = Console()
@@ -46,6 +54,7 @@ class Args(argparse.Namespace):
     seed: int | None
     dry_run: bool
     yes: bool
+    for_gource: bool
 
 
 def _positive_int(value: str) -> int:
@@ -101,6 +110,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the confirmation prompt",
     )
+    parser.add_argument(
+        "--for-gource",
+        action="store_true",
+        help=(
+            "grow a tree for gource to animate: each commit adds a file at the "
+            "root or gathers three siblings into a new folder"
+        ),
+    )
     parser.add_argument("--version", action="version", version=version("busy-profile"))
     return parser
 
@@ -121,10 +138,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     # A naive local ``now`` lets each commit carry the UTC offset of its own day.
-    planned = plan_commits(
-        args.days, args.commits, now=datetime.now(), rng=random.Random(args.seed)
-    )
-    _describe(planned, repo)
+    now = datetime.now()
+    rng = random.Random(args.seed)
+    if args.for_gource:
+        reserved = {path.name for path in repo.iterdir()}
+        planned = plan_gource_commits(
+            args.days, args.commits, now=now, rng=rng, reserved=reserved
+        )
+    else:
+        planned = plan_commits(args.days, args.commits, now=now, rng=rng)
+    _describe(planned, repo, for_gource=args.for_gource)
 
     if args.dry_run:
         return 0
@@ -184,13 +207,22 @@ def _error(message: str) -> None:
     err_console.print(f"[bold red]error:[/] {escape(message)}", soft_wrap=True)
 
 
-def _describe(commits: Sequence[PlannedCommit], repo: Path) -> None:
+def _describe(
+    commits: Sequence[PlannedCommit], repo: Path, *, for_gource: bool
+) -> None:
     per_day = Counter(commit.timestamp.date() for commit in commits)
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="cyan", justify="right")
     summary.add_column()
     summary.add_row("repository", escape(str(repo)))
     summary.add_row("commits", f"[bold]{len(commits):,}[/]")
+    if for_gource:
+        changes = [change for commit in commits for change in commit.changes]
+        files = sum(isinstance(change, WriteFile) for change in changes)
+        folders = len(
+            {c.destination.split("/")[0] for c in changes if isinstance(c, Move)}
+        )
+        summary.add_row("tree", f"{files:,} files, {folders:,} folders")
     summary.add_row("first commit", f"{commits[0].timestamp:%Y-%m-%d %H:%M:%S %z}")
     summary.add_row("last commit", f"{commits[-1].timestamp:%Y-%m-%d %H:%M:%S %z}")
     summary.add_row(
