@@ -2,38 +2,20 @@
 
 from __future__ import annotations
 
-import os
-import random
-import subprocess
+import re
 from collections.abc import Callable, Sequence
-from datetime import datetime
 from pathlib import Path
 
-from busy_profile.schedule import format_git_date
-from busy_profile.text import RANDOM_TEXT_FILE, random_sentence
+from busy_profile.git import GitError, run, run_raw
+from busy_profile.plan import PlannedCommit, format_raw_date
+from busy_profile.text import RANDOM_TEXT_FILE
 
 TEMP_BRANCH = "busy-profile-rewrite"
+TEMP_REF = f"refs/heads/{TEMP_BRANCH}"
 
-ProgressCallback = Callable[[int, int], None]
+StageCallback = Callable[[str], None]
 
-
-class GitError(RuntimeError):
-    """A git invocation failed, or the repository is not in a usable state."""
-
-
-def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    process = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        env=None if env is None else {**os.environ, **env},
-        check=False,
-    )
-    if process.returncode != 0:
-        detail = process.stderr.strip() or process.stdout.strip()
-        raise GitError(f"`git {' '.join(args)}` failed: {detail}")
-    return process.stdout.strip()
+_IDENT_DATE = re.compile(r" \d+ [+-]\d{4}$")
 
 
 def current_branch(repo: Path) -> str:
@@ -43,7 +25,7 @@ def current_branch(repo: Path) -> str:
     detached HEAD, which we cannot safely rewrite.
     """
     try:
-        return _git(repo, "symbolic-ref", "--short", "HEAD")
+        return run(repo, "symbolic-ref", "--short", "HEAD")
     except GitError as error:
         raise GitError(
             "HEAD is detached; check out a branch before rewriting history"
@@ -53,7 +35,7 @@ def current_branch(repo: Path) -> str:
 def commit_count(repo: Path) -> int:
     """How many commits are reachable from HEAD, or 0 on an unborn branch."""
     try:
-        return int(_git(repo, "rev-list", "--count", "HEAD"))
+        return int(run(repo, "rev-list", "--count", "HEAD"))
     except GitError:
         return 0
 
@@ -62,10 +44,10 @@ def assert_rewritable(repo: Path) -> None:
     """Raise :class:`GitError` unless ``repo`` is a repo we can rewrite."""
     if not repo.is_dir():
         raise GitError(f"{repo} is not a directory")
-    if _git(repo, "rev-parse", "--is-bare-repository") == "true":
+    if run(repo, "rev-parse", "--is-bare-repository") == "true":
         raise GitError(f"{repo} is a bare repository")
     current_branch(repo)
-    if _git(repo, "branch", "--list", TEMP_BRANCH):
+    if run(repo, "branch", "--list", TEMP_BRANCH):
         raise GitError(
             f"branch {TEMP_BRANCH!r} already exists; delete it and try again"
         )
@@ -73,74 +55,88 @@ def assert_rewritable(repo: Path) -> None:
 
 def rewrite_history(
     repo: Path,
-    timestamps: Sequence[datetime],
+    commits: Sequence[PlannedCommit],
     *,
-    rng: random.Random | None = None,
-    on_commit: ProgressCallback | None = None,
+    on_stage: StageCallback | None = None,
 ) -> None:
-    """Replace the history of ``repo`` with one commit per entry in ``timestamps``.
+    """Replace the history of ``repo`` with the given planned ``commits``.
 
-    Every commit overwrites ``random_text`` with a freshly generated sentence and
-    quotes that sentence in its commit message. The first commit additionally
-    snapshots the rest of the current working tree (everything ``git add -A``
-    would stage). The previous history is discarded.
+    Every commit writes its message into ``random_text``, overwriting whatever
+    the previous commit put there. The first commit additionally carries whatever
+    working tree snapshot the plan was built with. The previous history is
+    discarded.
+
+    The commits are built by ``git fast-import``, which writes them all as one
+    packfile in a single pass. Nothing touches HEAD or the working tree until
+    that import has succeeded, so a failure part-way through leaves the
+    repository exactly as it was.
     """
-    if not timestamps:
-        raise ValueError("timestamps must not be empty")
-    if any(timestamp.tzinfo is None for timestamp in timestamps):
-        raise ValueError("timestamps must be timezone-aware")
+    if not commits:
+        raise ValueError("commits must not be empty")
+    if any(commit.timestamp.tzinfo is None for commit in commits):
+        raise ValueError("commit timestamps must be timezone-aware")
 
     assert_rewritable(repo)
-    rng = random.Random() if rng is None else rng
     branch = current_branch(repo)
-    total = len(timestamps)
+    total = f"{len(commits):,}"
 
-    _git(repo, "checkout", "--orphan", TEMP_BRANCH)
+    def stage(message: str) -> None:
+        if on_stage is not None:
+            on_stage(message)
+
+    stage("reading git identity")
+    author, committer = _identity(repo)
+
+    stage(f"building {total} commits")
+    stream = _import_stream(commits, author, committer)
+
+    stage(f"importing {total} commits")
+    run_raw(repo, "fast-import", "--quiet", "--done", stdin=stream)
+
+    stage(f"pointing {branch} at the new history")
     try:
-        for index, timestamp in enumerate(timestamps):
-            sentence = _write_random_text(repo, rng)
-            if index == 0:
-                _git(repo, "add", "-A")
-            _git(repo, "add", "--force", "--", RANDOM_TEXT_FILE)
-            _commit(repo, f"Update {RANDOM_TEXT_FILE} to be {sentence}", timestamp)
-            if on_commit is not None:
-                on_commit(index + 1, total)
-        _git(repo, "branch", "-M", branch)
-    except (Exception, KeyboardInterrupt):
-        _restore(repo, branch)
-        raise
+        run(repo, "update-ref", f"refs/heads/{branch}", TEMP_REF)
+        run(repo, "reset", "--hard", "--quiet", branch)
+    finally:
+        run(repo, "update-ref", "-d", TEMP_REF)
 
 
-def _write_random_text(repo: Path, rng: random.Random) -> str:
-    """Overwrite ``random_text`` with a single random sentence and return it."""
-    sentence = random_sentence(rng)
-    (repo / RANDOM_TEXT_FILE).write_text(f"{sentence}\n")
-    return sentence
+def _identity(repo: Path) -> tuple[str, str]:
+    """The ``Name <email>`` git itself would use, author and committer.
 
-
-def _restore(repo: Path, branch: str) -> None:
-    """Move HEAD back to ``branch``, drop the temporary branch, and tidy up."""
-    if _git(repo, "branch", "--list", branch):
-        _git(repo, "checkout", "--force", branch)
-    else:
-        _git(repo, "symbolic-ref", "HEAD", f"refs/heads/{branch}")
-        _git(repo, "read-tree", "--empty")
-    if _git(repo, "branch", "--list", TEMP_BRANCH):
-        _git(repo, "branch", "-D", TEMP_BRANCH)
-
-    path = repo / RANDOM_TEXT_FILE
-    if path.exists() and not _git(repo, "ls-files", "--", RANDOM_TEXT_FILE):
-        path.unlink()
-
-
-def _commit(repo: Path, message: str, timestamp: datetime) -> None:
-    stamp = format_git_date(timestamp)
-    _git(
-        repo,
-        "commit",
-        "--allow-empty",
-        "--no-verify",
-        "--message",
-        message,
-        env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+    Asking git rather than reading config means the usual precedence (env vars,
+    local, global, ``useConfigOnly``) applies, and that a repository with no
+    configured identity fails here exactly as ``git commit`` would.
+    """
+    return (
+        _IDENT_DATE.sub("", run(repo, "var", "GIT_AUTHOR_IDENT")),
+        _IDENT_DATE.sub("", run(repo, "var", "GIT_COMMITTER_IDENT")),
     )
+
+
+def _import_stream(
+    commits: Sequence[PlannedCommit],
+    author: str,
+    committer: str,
+) -> bytes:
+    """Build the fast-import stream for the whole history.
+
+    Commits with no ``from`` chain onto the branch tip, so the first is a root
+    commit and the rest are linear.
+    """
+    chunks: list[bytes] = []
+    for commit in commits:
+        message = commit.message.encode()
+        blob = f"{commit.message}\n".encode()
+        stamp = format_raw_date(commit.timestamp)
+
+        chunks.append(f"commit {TEMP_REF}\n".encode())
+        chunks.append(f"author {author} {stamp}\n".encode())
+        chunks.append(f"committer {committer} {stamp}\n".encode())
+        chunks.append(f"data {len(message)}\n".encode() + message + b"\n")
+        for entry in commit.entries:
+            chunks.append(f"M {entry.mode} {entry.sha} ".encode() + entry.path + b"\n")
+        chunks.append(f"M 100644 inline {RANDOM_TEXT_FILE}\n".encode())
+        chunks.append(f"data {len(blob)}\n".encode() + blob)
+    chunks.append(b"done\n")
+    return b"".join(chunks)

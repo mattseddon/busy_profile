@@ -9,7 +9,7 @@ import pytest
 
 from busy_profile import __version__
 from busy_profile.cli import Args, main, parse_args
-from busy_profile.schedule import DEFAULT_COMMITS, DEFAULT_DAYS
+from busy_profile.plan import DEFAULT_COMMITS, DEFAULT_DAYS
 from tests.conftest import git
 
 

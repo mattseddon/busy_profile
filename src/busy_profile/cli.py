@@ -12,31 +12,23 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
 from rich.prompt import Confirm
 from rich.table import Table
 
 from busy_profile import __version__
+from busy_profile.git import GitError
+from busy_profile.plan import (
+    DEFAULT_COMMITS,
+    DEFAULT_DAYS,
+    PlannedCommit,
+    commits_per_day,
+    plan_commits,
+)
 from busy_profile.rewrite import (
-    GitError,
     assert_rewritable,
     commit_count,
     current_branch,
     rewrite_history,
-)
-from busy_profile.schedule import (
-    DEFAULT_COMMITS,
-    DEFAULT_DAYS,
-    commits_per_day,
-    generate_timestamps,
 )
 
 console = Console()
@@ -64,6 +56,14 @@ class Args(argparse.Namespace):
     yes: bool
 
 
+def _positive_int(value: str) -> int:
+    """An argparse type that rejects zero and negatives before we touch a repo."""
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {number}")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="busy-profile",
@@ -76,14 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-d",
         "--days",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_DAYS,
         help=f"how many days back the initial commit goes (default: {DEFAULT_DAYS})",
     )
     parser.add_argument(
         "-c",
         "--commits",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_COMMITS,
         help=f"how many commits to generate (default: {DEFAULT_COMMITS})",
     )
@@ -121,36 +121,29 @@ def parse_args(argv: Sequence[str] | None = None) -> Args:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
 
-    rng = random.Random(args.seed)
-    try:
-        timestamps = generate_timestamps(
-            args.days,
-            args.commits,
-            now=datetime.now().astimezone(),
-            rng=rng,
-        )
-    except ValueError as error:
-        _error(str(error))
-        return 2
-
     repo = args.repo
-    _describe(timestamps, repo)
+    rng = random.Random(args.seed)
+    now = datetime.now().astimezone()
 
     if args.dry_run:
+        _describe(plan_commits(None, args.days, args.commits, now=now, rng=rng), repo)
         return 0
 
     try:
         assert_rewritable(repo)
+        planned = plan_commits(repo, args.days, args.commits, now=now, rng=rng)
     except GitError as error:
         _error(str(error))
         return 1
+
+    _describe(planned, repo)
 
     if not args.yes and not _confirm(repo):
         err_console.print("[yellow]aborted[/]", soft_wrap=True)
         return 1
 
     try:
-        _rewrite_with_progress(repo, timestamps, rng)
+        _rewrite_with_spinner(repo, planned)
     except GitError as error:
         _error(str(error))
         return 1
@@ -163,48 +156,39 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     tick = "[green]\N{HEAVY CHECK MARK}[/]"
     console.print(
-        f"{tick} rewrote [bold]{len(timestamps):,}[/] commits"
+        f"{tick} rewrote [bold]{len(planned):,}[/] commits"
         + f" in [bold]{escape(str(repo))}[/]",
         soft_wrap=True,
     )
     return 0
 
 
-def _rewrite_with_progress(
-    repo: Path, timestamps: Sequence[datetime], rng: random.Random
-) -> None:
-    """Run the rewrite behind a progress bar."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(complete_style="green", finished_style="green"),
-        MofNCompleteColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(elapsed_when_finished=True),
-        console=console,
-        disable=not console.is_terminal,
-    ) as progress:
-        task = progress.add_task("committing", total=len(timestamps))
+def _rewrite_with_spinner(repo: Path, commits: Sequence[PlannedCommit]) -> None:
+    if not console.is_terminal:
+        rewrite_history(repo, commits)
+        return
 
-        def advance(done: int, total: int) -> None:
-            progress.update(task, completed=done, total=total)
+    with console.status("[cyan]starting[/]", spinner="dots") as status:
 
-        rewrite_history(repo, timestamps, rng=rng, on_commit=advance)
+        def report(stage: str) -> None:
+            status.update(f"[cyan]{stage}[/]")
+
+        rewrite_history(repo, commits, on_stage=report)
 
 
 def _error(message: str) -> None:
     err_console.print(f"[bold red]error:[/] {escape(message)}", soft_wrap=True)
 
 
-def _describe(timestamps: Sequence[datetime], repo: Path) -> None:
-    per_day = commits_per_day(timestamps)
+def _describe(commits: Sequence[PlannedCommit], repo: Path) -> None:
+    per_day = commits_per_day(commits)
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="cyan", justify="right")
     summary.add_column()
     summary.add_row("repository", escape(str(repo)))
-    summary.add_row("commits", f"[bold]{len(timestamps):,}[/]")
-    summary.add_row("first commit", f"{timestamps[0]:%Y-%m-%d %H:%M:%S %z}")
-    summary.add_row("last commit", f"{timestamps[-1]:%Y-%m-%d %H:%M:%S %z}")
+    summary.add_row("commits", f"[bold]{len(commits):,}[/]")
+    summary.add_row("first commit", f"{commits[0].timestamp:%Y-%m-%d %H:%M:%S %z}")
+    summary.add_row("last commit", f"{commits[-1].timestamp:%Y-%m-%d %H:%M:%S %z}")
     summary.add_row(
         "active days",
         f"{len(per_day):,} (busiest day has {max(per_day.values())})",
