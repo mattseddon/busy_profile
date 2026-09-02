@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import sys
 from collections.abc import Callable
 from importlib.metadata import version
@@ -7,7 +8,9 @@ from pathlib import Path
 from typing import get_type_hints
 
 import pytest
+from rich.console import Console
 
+from busy_profile import cli
 from busy_profile.cli import Args, main, parse_args
 from busy_profile.plan import DEFAULT_COMMITS, DEFAULT_DAYS
 from tests.conftest import git
@@ -136,6 +139,30 @@ def test_rewrite_emits_no_progress_animation_when_piped(
     out = capsys.readouterr().out
     assert "\x1b[" not in out
     assert "committing" not in out
+
+
+def test_rewrite_leaves_a_line_per_finished_stage_in_a_terminal(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The spinner overwrites itself; finished stages must stay on screen."""
+    screen = io.StringIO()
+    monkeypatch.setattr(
+        cli, "console", Console(file=screen, force_terminal=True, width=200)
+    )
+
+    assert main(["--days", "30", "--commits", "8", "--repo", str(repo), "--yes"]) == 0
+
+    out = screen.getvalue()
+    stages = [
+        "reading git identity",
+        "staging the working tree",
+        "building 8 commits",
+        "importing 8 commits",
+        "pointing main at the new history",
+    ]
+    for stage in stages:
+        assert stage in out
+    assert out.count("\N{HEAVY CHECK MARK}") == len(stages) + 1
 
 
 def test_rewrites_the_repo_when_confirmed(

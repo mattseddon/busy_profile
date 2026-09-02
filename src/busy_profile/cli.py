@@ -24,6 +24,8 @@ from busy_profile.rewrite import assert_rewritable, commit_count, rewrite_histor
 console = Console()
 err_console = Console(stderr=True)
 
+TICK = "[green]\N{HEAVY CHECK MARK}[/]"
+
 
 class Args(argparse.Namespace):
     """Typed view of the parsed arguments.
@@ -143,10 +145,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 130
 
-    tick = "[green]\N{HEAVY CHECK MARK}[/]"
     console.print(
         (
-            f"{tick} rewrote [bold]{len(planned):,}[/] commits"
+            f"{TICK} rewrote [bold]{len(planned):,}[/] commits"
             f" in [bold]{escape(str(repo))}[/]"
         ),
         soft_wrap=True,
@@ -161,12 +162,22 @@ def _rewrite_with_spinner(
         rewrite_history(repo, branch, commits)
         return
 
+    in_progress: str | None = None
+
+    def finish() -> None:
+        if in_progress is not None:
+            console.print(f"{TICK} [dim]{escape(in_progress)}[/]")
+
     with console.status("[cyan]starting[/]", spinner="dots") as status:
 
         def report(stage: str) -> None:
+            nonlocal in_progress
+            finish()
+            in_progress = stage
             status.update(f"[cyan]{escape(stage)}[/]")
 
         rewrite_history(repo, branch, commits, on_stage=report)
+        finish()
 
 
 def _error(message: str) -> None:
