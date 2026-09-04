@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from busy_profile.plan import PlannedCommit, plan_commits
+from busy_profile.plan import PlannedCommit, plan_commits, timestamps_after
 
 NOW = datetime(2026, 8, 31, 12, 0, 0, tzinfo=UTC)
 
@@ -75,6 +75,17 @@ def test_different_seeds_give_different_histories() -> None:
 def test_commits_spread_across_many_days() -> None:
     per_day = Counter(commit.timestamp.date() for commit in plan(365, 2500, seed=7))
     assert len(per_day) > 300
+
+
+def test_timestamps_after_stay_inside_the_open_interval() -> None:
+    start = NOW - timedelta(hours=1)
+    stamps = timestamps_after(start, 500, now=NOW, rng=random.Random(0))
+
+    assert len(stamps) == 500
+    assert stamps == sorted(stamps)
+    assert stamps[0] > start
+    assert stamps[-1] <= NOW
+    assert all(stamp.microsecond == 0 for stamp in stamps)
 
 
 def test_an_aware_now_keeps_its_zone() -> None:

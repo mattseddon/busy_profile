@@ -74,13 +74,30 @@ def plan_timestamps(
     second and would otherwise not round-trip what is planned here.
     """
     start = now.replace(microsecond=0) - timedelta(days=days)
-    span = days * SECONDS_PER_DAY
+    later = timestamps_after(start, commits - 1, now=now, rng=rng)
+    return [start.astimezone(now.tzinfo), *later]
+
+
+def timestamps_after(
+    start: datetime,
+    count: int,
+    *,
+    now: datetime,
+    rng: random.Random,
+) -> list[datetime]:
+    """Draw ``count`` timestamps uniformly from ``(start, now]``, in order.
+
+    ``start`` and ``now`` must either both be naive or both be aware; the
+    results take ``now``'s zone, with the same local-time treatment as
+    :func:`plan_timestamps`. ``start`` must be at least a second before ``now``.
+    """
+    start = start.replace(microsecond=0)
+    span = int((now.replace(microsecond=0) - start).total_seconds())
 
     def at(seconds: int) -> datetime:
         return (start + timedelta(seconds=seconds)).astimezone(now.tzinfo)
 
-    later = sorted(at(rng.randint(1, span)) for _ in range(commits - 1))
-    return [at(0), *later]
+    return sorted(at(rng.randint(1, span)) for _ in range(count))
 
 
 def plan_commits(

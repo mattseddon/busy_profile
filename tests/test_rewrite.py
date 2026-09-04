@@ -7,64 +7,19 @@ from pathlib import Path
 import pytest
 
 from busy_profile import rewrite
-from busy_profile.git import GitError, run_raw
+from busy_profile.git import TEMP_BRANCH, GitError, current_branch, run_raw
 from busy_profile.gource import plan_gource_commits
-from busy_profile.plan import RANDOM_TEXT_FILE, PlannedCommit, plan_commits
-from busy_profile.rewrite import (
-    TEMP_BRANCH,
-    StageCallback,
-    assert_rewritable,
-    current_branch,
-    format_raw_date,
-    rewrite_history,
+from busy_profile.plan import RANDOM_TEXT_FILE
+from tests.conftest import (
+    author_dates,
+    commit_dates,
+    git,
+    plan_for,
+    replay,
+    rewrite_repo,
 )
-from tests.conftest import git, replay
 
 NOW = datetime(2026, 8, 31, 12, 0, 0, tzinfo=UTC)
-
-
-def plan_for(
-    days: int,
-    count: int,
-    *,
-    seed: int = 0,
-    now: datetime | None = None,
-) -> list[PlannedCommit]:
-    return plan_commits(
-        days,
-        count,
-        now=now or datetime.now().astimezone(),
-        rng=random.Random(seed),
-    )
-
-
-def rewrite_repo(
-    repo: Path,
-    planned: list[PlannedCommit],
-    *,
-    on_stage: StageCallback | None = None,
-) -> None:
-    """Check the repo then rewrite it, as the CLI does."""
-    rewrite_history(repo, assert_rewritable(repo), planned, on_stage=on_stage)
-
-
-def commit_dates(repo: Path) -> list[tuple[datetime, datetime]]:
-    """The (author, committer) date of every commit, oldest first.
-
-    Parsed rather than compared as text: git renders a zero UTC offset as ``Z``
-    where Python's ``isoformat`` writes ``+00:00``, so comparing the strings
-    would pass in a machine's local timezone and fail on a UTC CI runner.
-    Comparing datetimes compares instants, which holds in any timezone.
-    """
-    log = git(repo, "log", "--reverse", "--format=%aI|%cI")
-    return [
-        (datetime.fromisoformat(author), datetime.fromisoformat(committer))
-        for author, committer in (line.split("|") for line in log.splitlines())
-    ]
-
-
-def author_dates(repo: Path) -> list[datetime]:
-    return [author for author, _ in commit_dates(repo)]
 
 
 def random_text_at_each_commit(repo: Path) -> list[str]:
@@ -271,34 +226,6 @@ def test_rewrite_works_on_a_repo_with_no_commits(tmp_path: Path) -> None:
     assert git(tmp_path, "rev-list", "--count", "HEAD") == "3"
 
 
-def test_assert_rewritable_returns_the_checked_out_branch(repo: Path) -> None:
-    git(repo, "checkout", "-b", "feature/wip")
-    assert assert_rewritable(repo) == "feature/wip"
-
-
-def test_rejects_detached_head(repo: Path) -> None:
-    git(repo, "checkout", "--detach")
-    with pytest.raises(GitError, match="detached"):
-        assert_rewritable(repo)
-
-
-def test_rejects_existing_temp_branch(repo: Path) -> None:
-    git(repo, "branch", TEMP_BRANCH)
-    with pytest.raises(GitError, match="already exists"):
-        assert_rewritable(repo)
-
-
-def test_rejects_a_directory_that_is_not_a_repo(tmp_path: Path) -> None:
-    with pytest.raises(GitError):
-        assert_rewritable(tmp_path)
-
-
-def test_rejects_a_bare_repo(tmp_path: Path) -> None:
-    git(tmp_path, "init", "--bare")
-    with pytest.raises(GitError, match="bare"):
-        assert_rewritable(tmp_path)
-
-
 def test_missing_git_identity_fails_before_anything_is_touched(repo: Path) -> None:
     original = git(repo, "rev-parse", "HEAD")
     git(repo, "config", "user.useConfigOnly", "true")
@@ -330,7 +257,7 @@ def test_a_failed_import_leaves_head_and_the_working_tree_alone(
         del _kwargs
         return b"this is not a fast-import stream\n"
 
-    monkeypatch.setattr(rewrite, "_import_stream", broken_stream)
+    monkeypatch.setattr(rewrite, "import_stream", broken_stream)
 
     with pytest.raises(GitError, match="fast-import"):
         rewrite_repo(repo, plan_for(10, 5))
@@ -354,7 +281,7 @@ def test_an_interrupt_after_the_import_leaves_no_temp_branch(
             raise KeyboardInterrupt
         return output
 
-    monkeypatch.setattr(rewrite, "run_raw", interrupt_after_import)
+    monkeypatch.setattr("busy_profile.git.run_raw", interrupt_after_import)
 
     with pytest.raises(KeyboardInterrupt):
         rewrite_repo(repo, plan_for(10, 5))
@@ -390,12 +317,3 @@ def test_gource_moves_show_up_as_renames_in_the_log(repo: Path) -> None:
     statuses = git(repo, "show", "--name-status", "--format=", "HEAD").splitlines()
     assert len(statuses) == 3
     assert all(line.startswith("R100") for line in statuses)
-
-
-def test_format_raw_date_is_epoch_seconds_and_offset() -> None:
-    assert format_raw_date(NOW) == "1788177600 +0000"
-
-
-def test_format_raw_date_keeps_a_non_utc_offset() -> None:
-    ten_hours_east = timezone(timedelta(hours=10))
-    assert format_raw_date(NOW.astimezone(ten_hours_east)) == "1788177600 +1000"

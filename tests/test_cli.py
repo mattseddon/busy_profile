@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import sys
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from typing import get_type_hints
@@ -23,10 +24,19 @@ def test_version_flag_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out.strip() == version("busy-profile")
 
 
-def test_defaults_are_365_days_and_2500_commits() -> None:
+def test_defaults_are_365_days_and_2500_commits(
+    repo: Path, wide_terminal: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``days`` parses as ``None`` so an explicit flag can be told apart; the
+    plan still starts DEFAULT_DAYS ago."""
+    del wide_terminal
     args = parse_args([])
-    assert args.days == DEFAULT_DAYS
+    assert args.days is None
     assert args.commits == DEFAULT_COMMITS
+
+    assert main(["--repo", str(repo), "--dry-run"]) == 0
+    expected = (datetime.now() - timedelta(days=DEFAULT_DAYS)).strftime("%Y-%m-%d")
+    assert expected in capsys.readouterr().out
 
 
 def test_flags_override_defaults() -> None:
@@ -42,13 +52,14 @@ def test_every_attribute_args_declares_is_actually_populated() -> None:
 
 
 def test_args_attributes_have_their_declared_types() -> None:
-    args = parse_args([])
+    args = parse_args(["--days", "3"])
     assert isinstance(args.days, int)
     assert isinstance(args.commits, int)
     assert isinstance(args.repo, Path)
     assert isinstance(args.dry_run, bool)
     assert isinstance(args.yes, bool)
     assert isinstance(args.for_gource, bool)
+    assert isinstance(args.append_commits, bool)
     assert args.seed is None
 
 
@@ -223,8 +234,92 @@ def test_for_gource_dry_run_describes_the_tree(
         main(["--commits", "14", "--repo", str(repo), "--dry-run", "--for-gource"]) == 0
     )
 
-    assert "9 files, 4 folders" in capsys.readouterr().out
+    assert "9 new files, 4 new folders" in capsys.readouterr().out
     assert git(repo, "status", "--porcelain") == "?? untracked.txt"
+
+
+def grow(repo: Path) -> list[str]:
+    """Give ``repo`` a 14-commit gource history; return its shas, oldest first."""
+    argv = [
+        "--commits",
+        "14",
+        "--repo",
+        str(repo),
+        "--seed",
+        "0",
+        "--yes",
+        "--for-gource",
+    ]
+    assert main(argv) == 0
+    return git(repo, "rev-list", "--reverse", "HEAD").splitlines()
+
+
+def append_argv(repo: Path, *extra: str) -> list[str]:
+    return [
+        "--commits",
+        "10",
+        "--repo",
+        str(repo),
+        "--for-gource",
+        "--append-commits",
+        *extra,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "complaint"),
+    [
+        (["--append-commits"], "--for-gource"),
+        (["--append-commits", "--for-gource", "--days", "30"], "--days"),
+    ],
+)
+def test_append_commits_rejects_bad_flag_combinations(
+    argv: list[str], complaint: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(argv)
+
+    assert excinfo.value.code == 2
+    assert complaint in capsys.readouterr().err
+
+
+def test_append_commits_adds_to_the_existing_history(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original = grow(repo)
+
+    assert main(append_argv(repo, "--yes", "--seed", "1")) == 0
+
+    shas = git(repo, "rev-list", "--reverse", "HEAD").splitlines()
+    assert shas[:14] == original
+    assert len(shas) == 24
+    assert "appended 10 commits" in capsys.readouterr().out
+    assert git(repo, "status", "--porcelain") == ""
+
+
+def test_append_commits_dry_run_says_it_appends(
+    repo: Path, wide_terminal: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    del wide_terminal
+    original = grow(repo)
+    capsys.readouterr()
+
+    assert main(append_argv(repo, "--dry-run")) == 0
+
+    out = capsys.readouterr().out
+    assert "append to main" in out
+    assert "destructive" not in out
+    assert git(repo, "rev-list", "--reverse", "HEAD").splitlines() == original
+
+
+def test_append_commits_refuses_a_dirty_tree(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    grow(repo)
+    (repo / "README.md").write_text("changed\n")
+
+    assert main(append_argv(repo, "--yes")) == 1
+    assert "uncommitted" in capsys.readouterr().err
 
 
 def test_refuses_to_rewrite_without_a_terminal_or_yes(
@@ -292,6 +387,28 @@ def test_answering_no_at_the_prompt_leaves_the_repo_alone(
 
     assert git(repo, "rev-parse", "HEAD") == original
     assert git(repo, "status", "--porcelain") == "?? untracked.txt"
+
+
+def test_append_prompt_is_not_a_destructive_warning(
+    repo: Path,
+    interactive_stdin: None,
+    wide_terminal: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    del interactive_stdin, wide_terminal
+    original = grow(repo)
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", _answering("n"))
+
+    assert main(append_argv(repo)) == 1
+
+    out = " ".join(capsys.readouterr().out.replace("│", " ").split())
+    assert "append commits" in out
+    assert "Branch main has 14 commits. This adds 10 more" in out
+    assert "destructive" not in out
+    assert "cannot be undone" not in out
+    assert git(repo, "rev-list", "--reverse", "HEAD").splitlines() == original
 
 
 def test_prompt_warns_what_will_be_lost(

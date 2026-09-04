@@ -5,12 +5,43 @@ from collections import defaultdict
 from collections.abc import Collection
 from datetime import UTC, datetime
 
-from busy_profile.gource import GROUP_SIZE, INITIAL_MESSAGE, plan_gource_commits
+from busy_profile.gource import (
+    GROUP_SIZE,
+    INITIAL_MESSAGE,
+    plan_appended_commits,
+    plan_gource_commits,
+)
 from busy_profile.plan import Move, PlannedCommit, WriteFile, plan_commits
 from busy_profile.text import NOUNS
 from tests.conftest import replay
 
 NOW = datetime(2026, 8, 31, 12, 0, 0, tzinfo=UTC)
+SINCE = datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC)
+
+EXISTING = {
+    "README.md": "# hi\n",
+    "notes.txt": "n\n",
+    "todo.txt": "t\n",
+    "deep/a/x.py": "x\n",
+    "deep/b/y.py": "y\n",
+    "deep/c/z.py": "z\n",
+    "flat/p.py": "p\n",
+    "flat/q.py": "q\n",
+    "flat/r.py": "r\n",
+    "level/s.py": "s\n",
+    "level/t.py": "t\n",
+    "level/u.py": "u\n",
+    ".gitignore": "*.log\n",
+    ".github/workflows/ci.yml": "on: push\n",
+}
+
+
+def append(
+    commits: int, *, seed: int = 0, existing: dict[str, str] = EXISTING
+) -> list[PlannedCommit]:
+    return plan_appended_commits(
+        commits, since=SINCE, now=NOW, rng=random.Random(seed), existing=existing
+    )
 
 
 def plan(
@@ -151,3 +182,64 @@ def test_dates_match_the_plain_plan_for_the_same_seed() -> None:
     """``--for-gource`` changes what the commits do, not when they happen."""
     plain = plan_commits(30, 50, now=NOW, rng=random.Random(0))
     assert [c.timestamp for c in plan(50)] == [c.timestamp for c in plain]
+
+
+def test_appended_commits_fall_between_the_last_commit_and_now() -> None:
+    stamps = [commit.timestamp for commit in append(40)]
+
+    assert len(stamps) == 40
+    assert stamps == sorted(stamps)
+    assert stamps[0] > SINCE
+    assert stamps[-1] <= NOW
+
+
+def test_appending_has_no_initial_commit() -> None:
+    assert all(commit.changes for commit in append(5))
+
+
+def test_appending_groups_the_existing_root_files_first() -> None:
+    first = append(1)[0]
+
+    assert [move.source for move in moves(first)] == [
+        "README.md",
+        "notes.txt",
+        "todo.txt",
+    ]
+    assert first.message.startswith("Move 3 files into ")
+
+
+def test_existing_folders_are_ranked_by_how_deep_their_files_go() -> None:
+    """``deep`` holds folders of files, so it waits; the two flat folders group
+    with the folder made from the root files as soon as that exists."""
+    planned = append(2)
+
+    grouped = folder_made_by(planned[0])
+    assert [move.source for move in moves(planned[1])] == ["flat", "level", grouped]
+    assert planned[1].message.startswith("Move 3 folders into ")
+
+
+def test_appending_never_touches_hidden_entries() -> None:
+    planned = append(200)
+
+    for commit in planned:
+        for change in commit.changes:
+            assert isinstance(change, WriteFile) or not change.source.startswith(".")
+
+
+def test_appending_never_reuses_a_name_already_at_the_root() -> None:
+    tree = replay(append(200), EXISTING)
+    assert set(EXISTING) & set(tree) == {".gitignore", ".github/workflows/ci.yml"}
+
+
+def test_appending_carries_on_where_a_fresh_plan_left_off() -> None:
+    """Appending to the tree a fresh run built is the same as a longer fresh run."""
+    fresh = plan(41)
+    tree = replay(fresh)
+    longer = replay(plan(41 + 120))
+
+    appended = append(120, existing=tree)
+    shape = [type(c.changes[0]) for c in appended]
+    expected = [type(c.changes[0]) for c in plan(41 + 120)[41:]]
+    assert shape == expected
+    assert replay(appended, tree).keys() != tree.keys()
+    assert len(replay(appended, tree)) == len(longer)

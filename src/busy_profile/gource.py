@@ -19,11 +19,17 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from busy_profile.plan import Move, PlannedCommit, WriteFile, plan_timestamps
+from busy_profile.plan import (
+    Move,
+    PlannedCommit,
+    WriteFile,
+    plan_timestamps,
+    timestamps_after,
+)
 from busy_profile.text import file_names, folder_names, random_sentence
 
 GROUP_SIZE = 3
@@ -69,6 +75,52 @@ def plan_gource_commits(
     planned = [PlannedCommit(stamps[0], INITIAL_MESSAGE, ())]
     planned.extend(_next_commit(stamp, root, rng) for stamp in stamps[1:])
     return planned
+
+
+def plan_appended_commits(
+    commits: int,
+    *,
+    since: datetime,
+    now: datetime,
+    rng: random.Random,
+    existing: Iterable[str],
+) -> list[PlannedCommit]:
+    """Plan ``commits`` commits that carry on growing a tree that already exists.
+
+    ``existing`` is every tracked path in the repository, relative to its root.
+    Unlike a fresh rewrite, everything at the root takes part: loose files are
+    grouped, and existing folders are ranked by how deep their files go, so a
+    folder holding ``a/b.txt`` has height 2. Hidden entries such as
+    ``.gitignore`` or ``.github`` are left alone, because moving them would
+    change what they do.
+
+    The commits are dated uniformly between ``since``, the time of the most
+    recent existing commit, and ``now``, and are written on top of that commit
+    by :func:`~busy_profile.rewrite.append_history`.
+    """
+    stamps = timestamps_after(since, commits, now=now, rng=rng)
+    root = _root_from_paths(existing)
+    return [_next_commit(stamp, root, rng) for stamp in stamps]
+
+
+def _root_from_paths(paths: Iterable[str]) -> _Root:
+    files: list[str] = []
+    heights: dict[str, int] = {}
+    taken: set[str] = set()
+    for path in sorted(set(paths)):
+        top, _, rest = path.partition("/")
+        taken.add(top)
+        if top.startswith("."):
+            continue
+        if not rest:
+            files.append(top)
+        else:
+            heights[top] = max(heights.get(top, 0), 1 + rest.count("/"))
+
+    root = _Root(taken=taken, files=files)
+    for folder, height in heights.items():
+        root.folders[height].append(folder)
+    return root
 
 
 def _next_commit(stamp: datetime, root: _Root, rng: random.Random) -> PlannedCommit:
