@@ -9,7 +9,7 @@ import pytest
 from busy_profile import rewrite
 from busy_profile.git import TEMP_BRANCH, GitError, current_branch, run_raw
 from busy_profile.gource import plan_gource_commits
-from busy_profile.plan import RANDOM_TEXT_FILE
+from busy_profile.plan import RANDOM_TEXT_FILE, Delete, PlannedCommit, WriteFile
 from tests.conftest import (
     author_dates,
     commit_dates,
@@ -307,6 +307,29 @@ def test_gource_plan_builds_the_planned_tree_around_the_snapshot(repo: Path) -> 
         assert (repo / path).read_text() == content
     assert git(repo, "rev-list", "--count", "HEAD") == "14"
     assert git(repo, "log", "-1", "--format=%s") == planned[-1].message
+
+
+def test_deleting_a_folder_removes_everything_beneath_it(repo: Path) -> None:
+    stamps = [NOW + timedelta(minutes=i) for i in range(3)]
+    planned = [
+        PlannedCommit(stamps[0], "Initial commit", ()),
+        PlannedCommit(
+            stamps[1],
+            "Add two files",
+            (WriteFile("tall/a/b/x.py", "x\n"), WriteFile("tall/a/y.py", "y\n")),
+        ),
+        PlannedCommit(stamps[2], "Delete tall", (Delete("tall"),)),
+    ]
+
+    rewrite_repo(repo, planned)
+
+    tracked = git(repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
+    assert tracked == ["README.md", "untracked.txt"]
+    assert not (repo / "tall").exists()
+    assert git(repo, "show", "--name-status", "--format=", "HEAD").splitlines() == [
+        "D\ttall/a/b/x.py",
+        "D\ttall/a/y.py",
+    ]
 
 
 def test_gource_moves_show_up_as_renames_in_the_log(repo: Path) -> None:

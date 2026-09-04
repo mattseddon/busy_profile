@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from busy_profile.plan import PlannedCommit, WriteFile
+from busy_profile.plan import Move, PlannedCommit, WriteFile
 
 TEMP_BRANCH = "busy-profile-rewrite"
 TEMP_REF = f"refs/heads/{TEMP_BRANCH}"
@@ -224,10 +224,13 @@ def _commit_chunks(
             blob = change.content.encode()
             chunks.append(b"M 100644 inline " + _path(change.path) + b"\n")
             chunks.append(f"data {len(blob)}\n".encode() + blob)
-        else:
+        elif isinstance(change, Move):
             # fast-import renames whole subdirectories as readily as files.
             source, destination = _path(change.source), _path(change.destination)
             chunks.append(b"R " + source + b" " + destination + b"\n")
+        else:
+            # Likewise, deleting a directory path removes everything beneath it.
+            chunks.append(b"D " + _path(change.path) + b"\n")
     return chunks
 
 

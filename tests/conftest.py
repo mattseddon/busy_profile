@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from busy_profile.git import StageCallback, assert_writable
-from busy_profile.plan import PlannedCommit, WriteFile, plan_commits
+from busy_profile.plan import Move, PlannedCommit, WriteFile, plan_commits
 from busy_profile.rewrite import rewrite_history
 
 
@@ -72,9 +72,9 @@ def replay(
 ) -> dict[str, str]:
     """Apply a plan to a ``{path: content}`` tree, checking every step.
 
-    A write must not clobber an existing path, a move must have something to
-    move, and nothing may already sit where a move lands. ``tree`` is the
-    starting point, empty unless given, and is not modified.
+    A write must not clobber an existing path, a move or delete must have
+    something to act on, and nothing may already sit where a move lands.
+    ``tree`` is the starting point, empty unless given, and is not modified.
     """
     tree = dict(tree or {})
 
@@ -86,13 +86,18 @@ def replay(
             if isinstance(change, WriteFile):
                 assert change.path not in tree, change
                 tree[change.path] = change.content
-            else:
+            elif isinstance(change, Move):
                 moved = under(change.source)
                 assert moved, change
                 assert not under(change.destination), change
                 for path in moved:
                     new_path = change.destination + path[len(change.source) :]
                     tree[new_path] = tree.pop(path)
+            else:
+                removed = under(change.path)
+                assert removed, change
+                for path in removed:
+                    del tree[path]
     return tree
 
 

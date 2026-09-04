@@ -2,28 +2,36 @@
 
 `gource <https://gource.io>`_ animates a repository as a tree of files, so one
 file rewritten thousands of times makes for a dull film. In this mode every
-commit after the first either adds one file at the root or gathers three
-siblings into a new folder, and the tree grows like a base-3 counter:
+commit after the first does one of three things:
 
-* three loose files at the root become a folder of files (height 1);
-* three folders of the same height become one folder a level taller.
+* adds one file at the root;
+* gathers three siblings into a new folder;
+* deletes a folder that has grown five levels deep.
 
-Folders of different heights are never mixed, so the tree stays balanced. A
-folder is never added to once made, which means the root is the only place
-where ungrouped items ever accumulate. Each commit therefore looks at the root
-for something to group, starting with the smallest units and working up
-through the heights, and adds a file only when nothing can be grouped.
+The tree grows like a base-3 counter. Three loose files at the root become a
+folder of files (height 1), and three folders of the same height become one
+folder a level taller. Folders of different heights are never mixed, so the
+tree stays balanced. A folder is never added to once made, which means the root
+is the only place where ungrouped items ever accumulate. Each commit therefore
+looks at the root for something to group, starting with the smallest units and
+working up through the heights, and adds a file only when nothing can be
+grouped.
+
+Growth is not unbounded. The commit after one that makes a folder
+``MAX_HEIGHT`` levels deep deletes that folder outright, and does nothing else,
+so gource shows the tree collapse and start again.
 """
 
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from busy_profile.plan import (
+    Delete,
     Move,
     PlannedCommit,
     WriteFile,
@@ -34,6 +42,14 @@ from busy_profile.text import file_names, folder_names, random_sentence
 
 GROUP_SIZE = 3
 INITIAL_MESSAGE = "Initial commit"
+
+# A folder this many levels deep, holding files at ``x/a/b/c/d/file``, is
+# deleted by the next commit.
+MAX_HEIGHT = 5
+
+# An existing folder with more than this many files directly inside it is not
+# one of ours, and is left alone when appending.
+MAX_FOLDER_FILES = 3
 
 
 def _no_folders() -> defaultdict[int, list[str]]:
@@ -48,11 +64,14 @@ class _Root:
     those has height 2, and so on. ``taken`` holds every name in use at the
     root, including whatever was there before the rewrite, so a generated name
     never overwrites a file or merges into a folder that already exists.
+    ``doomed`` lists folders that have reached ``MAX_HEIGHT`` and are waiting
+    to be deleted.
     """
 
     taken: set[str]
     files: list[str] = field(default_factory=list)
     folders: defaultdict[int, list[str]] = field(default_factory=_no_folders)
+    doomed: list[str] = field(default_factory=list)
 
 
 def plan_gource_commits(
@@ -88,15 +107,19 @@ def plan_appended_commits(
     """Plan ``commits`` commits that carry on growing a tree that already exists.
 
     ``existing`` is every tracked path in the repository, relative to its root.
-    Unlike a fresh rewrite, everything at the root takes part: loose files are
+    Unlike a fresh rewrite, what is at the root takes part: loose files are
     grouped, and existing folders are ranked by how deep their files go, so a
-    folder holding ``a/b.txt`` has height 2. Hidden entries such as
-    ``.gitignore`` or ``.github`` are left alone, because moving them would
-    change what they do.
+    folder holding ``a/b.txt`` has height 2. A folder already ``MAX_HEIGHT``
+    deep is deleted first.
+
+    Two kinds of entry are left alone. Hidden ones such as ``.gitignore`` or
+    ``.github``, because moving them would change what they do; and folders
+    with more than ``MAX_FOLDER_FILES`` files directly inside, which no run of
+    this tool would have made and so are presumed to be real work.
 
     The commits are dated uniformly between ``since``, the time of the most
     recent existing commit, and ``now``, and are written on top of that commit
-    by :func:`~busy_profile.rewrite.append_history`.
+    by :func:`~busy_profile.append.append_commits`.
     """
     stamps = timestamps_after(since, commits, now=now, rng=rng)
     root = _root_from_paths(existing)
@@ -106,6 +129,7 @@ def plan_appended_commits(
 def _root_from_paths(paths: Iterable[str]) -> _Root:
     files: list[str] = []
     heights: dict[str, int] = {}
+    direct_files: Counter[str] = Counter()
     taken: set[str] = set()
     for path in sorted(set(paths)):
         top, _, rest = path.partition("/")
@@ -114,23 +138,39 @@ def _root_from_paths(paths: Iterable[str]) -> _Root:
             continue
         if not rest:
             files.append(top)
-        else:
-            heights[top] = max(heights.get(top, 0), 1 + rest.count("/"))
+            continue
+        heights[top] = max(heights.get(top, 0), 1 + rest.count("/"))
+        if "/" not in rest:
+            direct_files[top] += 1
 
     root = _Root(taken=taken, files=files)
     for folder, height in heights.items():
-        root.folders[height].append(folder)
+        if direct_files[folder] > MAX_FOLDER_FILES:
+            continue
+        if height >= MAX_HEIGHT:
+            root.doomed.append(folder)
+        else:
+            root.folders[height].append(folder)
     return root
 
 
 def _next_commit(stamp: datetime, root: _Root, rng: random.Random) -> PlannedCommit:
-    """Group the smallest complete set of siblings, or add a file if there is none."""
+    """Delete a doomed folder, else group the smallest complete set of siblings,
+    else add a file."""
+    if root.doomed:
+        return _delete(stamp, root)
     if len(root.files) >= GROUP_SIZE:
         return _group(stamp, root, rng, root.files, height=0)
     for height in sorted(root.folders):
         if len(root.folders[height]) >= GROUP_SIZE:
             return _group(stamp, root, rng, root.folders[height], height=height)
     return _add_file(stamp, root, rng)
+
+
+def _delete(stamp: datetime, root: _Root) -> PlannedCommit:
+    folder = root.doomed.pop(0)
+    root.taken.discard(folder)
+    return PlannedCommit(stamp, f"Delete {folder}", (Delete(folder),))
 
 
 def _add_file(stamp: datetime, root: _Root, rng: random.Random) -> PlannedCommit:
@@ -155,7 +195,10 @@ def _group(
     folder = _fresh(root.taken, folder_names(rng))
     del siblings[:GROUP_SIZE]
     root.taken.difference_update(members)
-    root.folders[height + 1].append(folder)
+    if height + 1 >= MAX_HEIGHT:
+        root.doomed.append(folder)
+    else:
+        root.folders[height + 1].append(folder)
 
     kind = "files" if height == 0 else "folders"
     moves = tuple(Move(member, f"{folder}/{member}") for member in members)

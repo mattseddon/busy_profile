@@ -36,7 +36,14 @@ class Move:
     destination: str
 
 
-Change = WriteFile | Move
+@dataclass(frozen=True, slots=True)
+class Delete:
+    """Remove ``path``, and everything beneath it if it is a folder."""
+
+    path: str
+
+
+Change = WriteFile | Move | Delete
 
 
 @dataclass(frozen=True, slots=True)

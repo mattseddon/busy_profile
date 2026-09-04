@@ -8,10 +8,11 @@ from datetime import UTC, datetime
 from busy_profile.gource import (
     GROUP_SIZE,
     INITIAL_MESSAGE,
+    MAX_HEIGHT,
     plan_appended_commits,
     plan_gource_commits,
 )
-from busy_profile.plan import Move, PlannedCommit, WriteFile, plan_commits
+from busy_profile.plan import Delete, Move, PlannedCommit, WriteFile, plan_commits
 from busy_profile.text import NOUNS
 from tests.conftest import replay
 
@@ -151,9 +152,34 @@ def test_every_folder_holds_exactly_three_things() -> None:
     assert all(len(names) == GROUP_SIZE for names in children.values())
 
 
-def test_the_tree_grows_deep() -> None:
-    """500 commits is enough for a folder five levels tall."""
-    assert max(path.count("/") for path in replay(plan(500))) == 5
+# A folder ``h`` levels deep costs (3**(h+1) - 1) / 2 actions: 4 for a folder of
+# three files, then three of those plus one move for each level above. A
+# five-level folder is complete at action 364 and the tree collapses at 365.
+FIVE_DEEP = (GROUP_SIZE ** (MAX_HEIGHT + 1) - 1) // 2
+
+
+def test_a_folder_five_levels_deep_is_deleted_by_the_next_commit() -> None:
+    planned = plan(FIVE_DEEP + 3)
+
+    tall = folder_made_by(planned[FIVE_DEEP])
+    assert planned[FIVE_DEEP].message == f"Move 3 folders into {tall}"
+    assert planned[FIVE_DEEP + 1].changes == (Delete(tall),)
+    assert planned[FIVE_DEEP + 1].message == f"Delete {tall}"
+    written(planned[FIVE_DEEP + 2])
+
+
+def test_the_tree_never_gets_deeper_than_five_levels() -> None:
+    just_before = replay(plan(FIVE_DEEP + 1))
+    assert max(path.count("/") for path in just_before) == MAX_HEIGHT
+
+    collapsed = replay(plan(FIVE_DEEP + 2))
+    assert collapsed == {}
+
+
+def test_the_tree_starts_again_after_collapsing() -> None:
+    fresh = [type(c.changes[0]) for c in plan(1 + 40)[1:]]
+    after = [type(c.changes[0]) for c in plan(FIVE_DEEP + 2 + 40)[FIVE_DEEP + 2 :]]
+    assert after == fresh
 
 
 def test_reserved_names_are_never_used_at_the_root() -> None:
@@ -161,7 +187,7 @@ def test_reserved_names_are_never_used_at_the_root() -> None:
 
     for commit in planned[1:]:
         for change in commit.changes:
-            path = change.path if isinstance(change, WriteFile) else change.destination
+            path = change.destination if isinstance(change, Move) else change.path
             assert path.split("/")[0] not in NOUNS
 
 
@@ -218,12 +244,52 @@ def test_existing_folders_are_ranked_by_how_deep_their_files_go() -> None:
     assert planned[1].message.startswith("Move 3 folders into ")
 
 
+def test_appending_deletes_an_existing_folder_five_levels_deep_first() -> None:
+    existing = {**EXISTING, "tall/a/b/c/d/x.py": "x\n", "tall/a/b/c/d/y.py": "y\n"}
+
+    first, second = append(2, existing=existing)
+
+    assert first.changes == (Delete("tall"),)
+    assert [move.source for move in moves(second)] == [
+        "README.md",
+        "notes.txt",
+        "todo.txt",
+    ]
+    assert not {p for p in replay([first], existing) if p.startswith("tall/")}
+
+
+def test_appending_leaves_folders_with_more_than_three_files_alone() -> None:
+    busy = {f"src/{name}.py": "" for name in ("a", "b", "c", "d")}
+    existing = {**EXISTING, **busy}
+
+    planned = append(60, existing=existing)
+
+    tree = replay(planned, existing)
+    assert all(path in tree for path in busy)
+    for commit in planned:
+        for change in commit.changes:
+            assert not isinstance(change, Move) or change.source != "src"
+            top = (
+                change.path
+                if isinstance(change, WriteFile | Delete)
+                else change.destination
+            ).split("/")[0]
+            assert top != "src"
+
+
+def test_a_folder_with_exactly_three_files_still_takes_part() -> None:
+    """``flat`` in EXISTING has three files, and is grouped like one of ours."""
+    planned = append(2)
+    assert "flat" in [move.source for move in moves(planned[1])]
+
+
 def test_appending_never_touches_hidden_entries() -> None:
     planned = append(200)
 
     for commit in planned:
         for change in commit.changes:
-            assert isinstance(change, WriteFile) or not change.source.startswith(".")
+            touched = change.source if isinstance(change, Move) else change.path
+            assert not touched.startswith(".")
 
 
 def test_appending_never_reuses_a_name_already_at_the_root() -> None:

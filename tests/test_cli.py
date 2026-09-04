@@ -234,8 +234,23 @@ def test_for_gource_dry_run_describes_the_tree(
         main(["--commits", "14", "--repo", str(repo), "--dry-run", "--for-gource"]) == 0
     )
 
-    assert "9 new files, 4 new folders" in capsys.readouterr().out
+    assert "9 new files, 4 new folders, 0 deleted" in capsys.readouterr().out
     assert git(repo, "status", "--porcelain") == "?? untracked.txt"
+
+
+def test_for_gource_dry_run_counts_every_folder_made(
+    repo: Path, wide_terminal: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Folder names are reused after a move, so folders are counted by commit.
+
+    366 commits build one five-level folder (243 files in 121 folders) and then
+    delete it.
+    """
+    del wide_terminal
+    argv = ["--commits", "366", "--repo", str(repo), "--dry-run", "--for-gource"]
+    assert main(argv) == 0
+
+    assert "243 new files, 121 new folders, 1 deleted" in capsys.readouterr().out
 
 
 def grow(repo: Path) -> list[str]:
@@ -405,7 +420,7 @@ def test_append_prompt_is_not_a_destructive_warning(
 
     out = " ".join(capsys.readouterr().out.replace("│", " ").split())
     assert "append commits" in out
-    assert "Branch main has 14 commits. This adds 10 more" in out
+    assert "Branch main has 14 commits, 10 more commits will be added." in out
     assert "destructive" not in out
     assert "cannot be undone" not in out
     assert git(repo, "rev-list", "--reverse", "HEAD").splitlines() == original

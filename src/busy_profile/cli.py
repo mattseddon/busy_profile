@@ -28,6 +28,7 @@ from busy_profile.gource import plan_appended_commits, plan_gource_commits
 from busy_profile.plan import (
     DEFAULT_COMMITS,
     DEFAULT_DAYS,
+    Delete,
     Move,
     PlannedCommit,
     WriteFile,
@@ -128,7 +129,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "grow a tree for gource to animate: each commit adds a file at the "
-            "root or gathers three siblings into a new folder"
+            "root or gathers three siblings into a new folder, and a folder that "
+            "reaches five levels deep is deleted"
         ),
     )
     parser.add_argument(
@@ -286,10 +288,16 @@ def _describe(
     if for_gource:
         changes = [change for commit in commits for change in commit.changes]
         files = sum(isinstance(change, WriteFile) for change in changes)
-        folders = len(
-            {c.destination.split("/")[0] for c in changes if isinstance(c, Move)}
+        # Every grouping commit makes exactly one folder. Names are reused once
+        # a folder has been moved into a parent, so counting them would undercount.
+        folders = sum(
+            any(isinstance(c, Move) for c in commit.changes) for commit in commits
         )
-        summary.add_row("tree", f"{files:,} new files, {folders:,} new folders")
+        deleted = sum(isinstance(change, Delete) for change in changes)
+        summary.add_row(
+            "tree",
+            f"{files:,} new files, {folders:,} new folders, {deleted:,} deleted",
+        )
     summary.add_row("first commit", f"{commits[0].timestamp:%Y-%m-%d %H:%M:%S %z}")
     summary.add_row("last commit", f"{commits[-1].timestamp:%Y-%m-%d %H:%M:%S %z}")
     summary.add_row(
