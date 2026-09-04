@@ -324,8 +324,8 @@ def _confirm_append(repo: Path, branch: str, count: int) -> bool:
     existing = commit_count(repo)
     plural = "" if existing == 1 else "s"
     notice = (
-        f"Branch [cyan]{escape(branch)}[/] has [bold]{existing:,}[/] commit{plural}. "
-        f"This adds [bold]{count:,}[/] more on top and keeps every existing one.\n"
+        f"Branch [cyan]{escape(branch)}[/] has [bold]{existing:,}[/] commit{plural}, "
+        f"[bold]{count:,}[/] more commit{plural} will be added.\n"
         "Files and folders at the root will be moved into new folders as the "
         "tree grows."
     )
