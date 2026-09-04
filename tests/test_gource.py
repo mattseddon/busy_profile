@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Collection
 from datetime import UTC, datetime
 
 from busy_profile.gource import (
     GROUP_SIZE,
     INITIAL_MESSAGE,
-    MAX_HEIGHT,
+    REPEATS_TO_DOOM,
     plan_appended_commits,
     plan_gource_commits,
 )
@@ -126,21 +126,9 @@ def test_folders_of_different_heights_do_not_group() -> None:
     ]
 
 
-def test_grouping_is_never_random() -> None:
-    """Which commits add and which group depends only on the commit count."""
-    shapes = {
-        tuple(
-            isinstance(change, Move)
-            for c in plan(60, seed=seed)
-            for change in c.changes
-        )
-        for seed in range(5)
-    }
-    assert len(shapes) == 1
-
-
 def test_every_folder_holds_exactly_three_things() -> None:
-    tree = replay(plan(500))
+    """Deletions take whole top-level folders, so no folder is ever left short."""
+    tree = replay(plan(800))
 
     children: defaultdict[str, set[str]] = defaultdict(set)
     for path in tree:
@@ -152,34 +140,53 @@ def test_every_folder_holds_exactly_three_things() -> None:
     assert all(len(names) == GROUP_SIZE for names in children.values())
 
 
-# A folder ``h`` levels deep costs (3**(h+1) - 1) / 2 actions: 4 for a folder of
-# three files, then three of those plus one move for each level above. A
-# five-level folder is complete at action 364 and the tree collapses at 365.
-FIVE_DEEP = (GROUP_SIZE ** (MAX_HEIGHT + 1) - 1) // 2
+def most_repeated(path: str) -> int:
+    """How many folders in ``path`` share the most common folder name."""
+    folders = path.split("/")[:-1]
+    return max(Counter(folders).values(), default=0)
 
 
-def test_a_folder_five_levels_deep_is_deleted_by_the_next_commit() -> None:
-    planned = plan(FIVE_DEEP + 3)
-
-    tall = folder_made_by(planned[FIVE_DEEP])
-    assert planned[FIVE_DEEP].message == f"Move 3 folders into {tall}"
-    assert planned[FIVE_DEEP + 1].changes == (Delete(tall),)
-    assert planned[FIVE_DEEP + 1].message == f"Delete {tall}"
-    written(planned[FIVE_DEEP + 2])
+# Three folders of one name in a single path needs a six-level folder, which
+# takes 1,093 commits to build. Seed 2 produces three such deletions in 2,500.
+LONG_RUN = 2500
+LONG_RUN_SEED = 2
 
 
-def test_the_tree_never_gets_deeper_than_five_levels() -> None:
-    just_before = replay(plan(FIVE_DEEP + 1))
-    assert max(path.count("/") for path in just_before) == MAX_HEIGHT
+def test_a_deleting_commit_removes_the_top_folder_just_made_and_nothing_else() -> None:
+    """In a fresh run a third use of a word can only appear when a new top-level
+    folder is named after two nested descendants, so each delete follows a
+    grouping."""
+    planned = plan(LONG_RUN, seed=LONG_RUN_SEED)
+    deleting = [
+        i
+        for i, c in enumerate(planned)
+        if any(isinstance(ch, Delete) for ch in c.changes)
+    ]
 
-    collapsed = replay(plan(FIVE_DEEP + 2))
-    assert collapsed == {}
+    assert len(deleting) == 3
+    for i in deleting:
+        (change,) = planned[i].changes
+        assert isinstance(change, Delete)
+        assert "/" not in change.path
+        assert change.path == folder_made_by(planned[i - 1])
+        assert planned[i].message == f"Delete {change.path}"
+
+        before = replay(planned[:i])
+        beneath = [p for p in before if p.startswith(change.path + "/")]
+        assert max(most_repeated(p) for p in beneath) == REPEATS_TO_DOOM
+        assert not any(
+            p.startswith(change.path + "/") for p in replay(planned[: i + 1])
+        )
 
 
-def test_the_tree_starts_again_after_collapsing() -> None:
-    fresh = [type(c.changes[0]) for c in plan(1 + 40)[1:]]
-    after = [type(c.changes[0]) for c in plan(FIVE_DEEP + 2 + 40)[FIVE_DEEP + 2 :]]
-    assert after == fresh
+def test_a_word_used_twice_in_a_path_is_not_enough() -> None:
+    tree = replay(plan(LONG_RUN, seed=LONG_RUN_SEED))
+    assert any(most_repeated(path) == 2 for path in tree)
+
+
+def test_no_surviving_path_uses_one_word_three_times() -> None:
+    for path in replay(plan(LONG_RUN, seed=LONG_RUN_SEED)):
+        assert most_repeated(path) < REPEATS_TO_DOOM, path
 
 
 def test_reserved_names_are_never_used_at_the_root() -> None:
@@ -244,18 +251,65 @@ def test_existing_folders_are_ranked_by_how_deep_their_files_go() -> None:
     assert planned[1].message.startswith("Move 3 folders into ")
 
 
-def test_appending_deletes_an_existing_folder_five_levels_deep_first() -> None:
-    existing = {**EXISTING, "tall/a/b/c/d/x.py": "x\n", "tall/a/b/c/d/y.py": "y\n"}
+def test_a_word_used_three_times_beneath_a_top_folder_deletes_the_whole_folder() -> (
+    None
+):
+    """``harbour/kettle/harbour/lantern/harbour`` uses one word three times, so
+    all of ``harbour`` goes, including the sibling branches that do not."""
+    existing = {
+        **EXISTING,
+        "harbour/kettle/harbour/lantern/harbour/x.py": "x\n",
+        "harbour/kettle/harbour/y.py": "y\n",
+        "harbour/ferry/z.py": "z\n",
+    }
 
     first, second = append(2, existing=existing)
 
-    assert first.changes == (Delete("tall"),)
-    assert [move.source for move in moves(second)] == [
-        "README.md",
-        "notes.txt",
-        "todo.txt",
-    ]
-    assert not {p for p in replay([first], existing) if p.startswith("tall/")}
+    assert first.changes == (Delete("harbour"),)
+    assert first.message == "Delete harbour"
+    tree = replay([first], existing)
+    assert not any(path.startswith("harbour/") for path in tree)
+    assert "deep/a/x.py" in tree
+    assert [m.source for m in moves(second)] == ["README.md", "notes.txt", "todo.txt"]
+
+
+def test_a_word_used_only_twice_beneath_a_top_folder_spares_it() -> None:
+    existing = {**EXISTING, "harbour/kettle/harbour/x.py": "x\n"}
+
+    planned = append(10, existing=existing)
+
+    assert not any(isinstance(ch, Delete) for c in planned for ch in c.changes)
+    assert "harbour/kettle/harbour/x.py" in replay(planned, existing)
+
+
+def test_the_top_folder_holding_the_deepest_triple_goes_first() -> None:
+    """``a/b/a/b/a`` completes its triple at level 5 and ``c/c/c`` at level 3,
+    so ``a`` is deleted before ``c``; then normal growth resumes."""
+    existing = {
+        **EXISTING,
+        "a/b/a/b/a/x.py": "x\n",
+        "a/b/e/y.py": "y\n",
+        "c/c/c/z.py": "z\n",
+    }
+
+    first, second, third = append(3, existing=existing)
+
+    assert first.changes == (Delete("a"),)
+    assert second.changes == (Delete("c"),)
+    moves(third)
+    tree = replay([first, second], existing)
+    assert not any(path.startswith(("a/", "c/")) for path in tree)
+
+
+def test_deleting_the_only_top_folder_frees_the_root() -> None:
+    """Once ``x`` is gone the root is empty, so the next commit adds a file."""
+    existing = {"x/y/x/x/f.py": "f\n"}
+
+    first, second = append(2, existing=existing)
+
+    assert first.changes == (Delete("x"),)
+    added = written(second)
+    assert replay([first, second], existing) == {added.path: added.content}
 
 
 def test_appending_leaves_folders_with_more_than_three_files_alone() -> None:
@@ -297,15 +351,15 @@ def test_appending_never_reuses_a_name_already_at_the_root() -> None:
     assert set(EXISTING) & set(tree) == {".gitignore", ".github/workflows/ci.yml"}
 
 
-def test_appending_carries_on_where_a_fresh_plan_left_off() -> None:
-    """Appending to the tree a fresh run built is the same as a longer fresh run."""
-    fresh = plan(41)
-    tree = replay(fresh)
-    longer = replay(plan(41 + 120))
+def test_appending_carries_on_from_a_fresh_tree() -> None:
+    """A fresh 41-commit tree is one complete three-level folder; appending
+    starts by adding files beside it, and every step stays legal."""
+    tree = replay(plan(41))
 
     appended = append(120, existing=tree)
-    shape = [type(c.changes[0]) for c in appended]
-    expected = [type(c.changes[0]) for c in plan(41 + 120)[41:]]
-    assert shape == expected
-    assert replay(appended, tree).keys() != tree.keys()
-    assert len(replay(appended, tree)) == len(longer)
+
+    written(appended[0])
+    after = replay(appended, tree)
+    assert len(after) > len(tree)
+    for path in after:
+        assert most_repeated(path) < REPEATS_TO_DOOM, path

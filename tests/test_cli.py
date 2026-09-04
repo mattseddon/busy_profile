@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -14,6 +15,7 @@ from rich.console import Console
 from busy_profile import cli
 from busy_profile.cli import Args, main, parse_args
 from busy_profile.plan import DEFAULT_COMMITS, DEFAULT_DAYS
+from busy_profile.text import NOUNS
 from tests.conftest import git
 
 
@@ -241,16 +243,24 @@ def test_for_gource_dry_run_describes_the_tree(
 def test_for_gource_dry_run_counts_every_folder_made(
     repo: Path, wide_terminal: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Folder names are reused after a move, so folders are counted by commit.
-
-    366 commits build one five-level folder (243 files in 121 folders) and then
-    delete it.
-    """
+    """Folder names are reused after a move, so folders are counted by commit,
+    not by distinct name: 2,500 commits make far more folders than there are
+    nouns to name them. Seed 2 also happens to delete some of them; the exact
+    number differs from the planner's own tests because the names already at
+    the repo root are reserved here, which shifts the draws."""
     del wide_terminal
-    argv = ["--commits", "366", "--repo", str(repo), "--dry-run", "--for-gource"]
-    assert main(argv) == 0
+    argv = ["--commits", "2500", "--seed", "2", "--repo", str(repo)]
+    assert main([*argv, "--dry-run", "--for-gource"]) == 0
 
-    assert "243 new files, 121 new folders, 1 deleted" in capsys.readouterr().out
+    match = re.search(
+        r"([\d,]+) new files, ([\d,]+) new folders, ([\d,]+) deleted",
+        capsys.readouterr().out,
+    )
+    assert match is not None
+    files, folders, deleted = (int(group.replace(",", "")) for group in match.groups())
+    assert folders > len(NOUNS)
+    assert deleted >= 1
+    assert files + folders + deleted == 2499
 
 
 def grow(repo: Path) -> list[str]:

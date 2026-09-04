@@ -129,8 +129,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "grow a tree for gource to animate: each commit adds a file at the "
-            "root or gathers three siblings into a new folder, and a folder that "
-            "reaches five levels deep is deleted"
+            "root or gathers three siblings into a new folder, and a top-level "
+            "folder is deleted once a path beneath it uses one word three times"
         ),
     )
     parser.add_argument(
